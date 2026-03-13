@@ -97,6 +97,66 @@ Steps in order: pre-contact compliance check → generate message → sanitize P
 - Workflow completion rate: 99.9%
 - Zero PII patterns in stored records
 
+## Observability
+
+### Metrics Stack
+
+Use **Prometheus + Grafana** (not Encore's built-in metrics):
+- Temporal Server and Go SDK expose `/metrics` natively to Prometheus — Encore metrics would create two separate stores with no unified dashboard.
+- Local development: Encore's built-in dashboard is fine for traces/API calls.
+- Staging/prod: Prometheus scrape + Grafana dashboards.
+
+| Concern | Tool |
+|---|---|
+| Metrics | Prometheus (native Temporal support) |
+| Dashboards + alerting | Grafana |
+| Distributed tracing | OpenTelemetry → Jaeger (dev) / Datadog (prod) |
+| Structured logging | `encore.dev/rlog` → stdout → Loki or CloudWatch |
+
+### Logging Standards
+
+Log levels: `rlog.Debug` for read-path lookups, `rlog.Info` for successful state changes, `rlog.Warn` for recoverable conditions, `rlog.Error` for failures returned to callers.
+
+Required fields on every log call: `"service"`, entity `"id"`, and domain key (e.g. `"external_id"`). Encore injects `trace_id` automatically.
+
+**Never log:** `account_number`, raw SSN/CC/phone, unsanitized `message_content`, JWT tokens, API keys, or DB connection strings.
+
+Temporal activity logs must include `"workflow_id"` and `"run_id"` as standard fields.
+
+### Key Metrics
+
+- `compliance_check_duration_ms` — histogram (p99 target < 50ms)
+- `compliance_violation_total` — counter, labelled by `rule`
+- `contact_attempt_total` — counter, labelled by `channel` and `outcome`
+- `contact_workflow_duration_ms` — histogram (p99 target < 2000ms)
+- `consent_revocation_total` — counter (spikes = leading compliance indicator)
+- `consent_event_publish_error_total` — counter (any value > 0 = critical)
+- `account_status_transition_total` — counter, labelled by `from`/`to`
+- Temporal SDK reports `temporal_workflow_completed`, `temporal_workflow_execution_latency`, `temporal_activity_execution_latency`, `temporal_schedule_to_start_latency` automatically when a Prometheus reporter is registered on the worker.
+
+### Trace Propagation
+
+- **Encore → Encore**: automatic (OTel context injected into all inter-service HTTP calls).
+- **Encore → Pub/Sub → Subscriber**: automatic (trace context in message metadata).
+- **Encore API → Temporal Worker**: manual — requires Temporal's OTel interceptor (`go.temporal.io/sdk/contrib/opentelemetry`) registered on both the worker and the Temporal client.
+
+Add `CorrelationID string` to `ContactWorkflowInput` (pass `encore.CurrentRequest().TraceID`). Every activity logs it so logs can be correlated even without a trace collector.
+
+### SLOs and Alerting
+
+| SLI | SLO | Alert condition |
+|---|---|---|
+| `compliance_check_duration_ms` p99 | < 50ms | p99 > 50ms for 5 min |
+| `contact_workflow_duration_ms` p99 | < 2000ms | p99 > 2000ms for 5 min |
+| Temporal workflow completion rate | 99.9% | failure rate > 0.1% over 1 hour |
+| `consent_event_publish_error_total` | 0 | alert immediately on any increment |
+| `temporal_schedule_to_start_latency` p99 | < 500ms | p99 > 500ms (worker starvation) |
+| Contact block rate | monitor only | alert if > 80% over 1 hour |
+
+### Health Check
+
+Add `GET /health` to the `contact` service. It must verify DB connectivity and Temporal namespace reachability. Used by load balancers and uptime monitors — distinct from Prometheus scraping.
+
 ## Implementation Order
 
 Follow the phases in `TD.md`:
