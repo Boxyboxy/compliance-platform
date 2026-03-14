@@ -17,11 +17,11 @@ The compliance service has no database and makes no cross-service API calls. The
 Why not have the compliance service fetch this data from the consumer and contact services?
 
 1. **Testability.** Every rule is a pure function of its input. Tests inject exact data without mocking service calls or seeding databases.
-2. **No circular dependencies.** The contact service will call compliance for pre-checks in Phase 3. If compliance also called contact (for frequency cap data), the dependency would be circular.
+2. **No circular dependencies.** The contact workflow calls compliance for pre-checks. If compliance also called contact (for frequency cap data), the dependency would be circular.
 3. **Performance.** A single request carries everything; no fan-out to other services. The p99 target is < 50ms — there is no latency budget for additional network calls.
 4. **Deployment independence.** The compliance service can be deployed, scaled, or restarted without any dependency on other services being available.
 
-The tradeoff: the caller is responsible for assembling the request correctly. This is acceptable because there will be a single orchestration point (the contact workflow in Phase 3) that gathers consumer data and contact history before calling compliance.
+The tradeoff: the caller is responsible for assembling the request correctly. This works in practice because there is a single orchestration point — the `ContactWorkflow` in the `workflows/` package — that gathers consumer state and contact history before calling `POST /compliance/check`. The contact service assembles timestamps from its own DB; the consumer service provides consent, attorney, and timezone state. All data arrives in one request.
 
 ## Rule Engine Design
 

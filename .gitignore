@@ -3,3 +3,5 @@ encore.gen.go
 encore.gen.cue
 /.encore
 /encore.gen
+/.envrc
+/.vscode

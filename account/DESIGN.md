@@ -9,7 +9,7 @@ This service manages delinquent account records linked to consumers. It is the s
 ### No foreign key to `consumers`
 `consumer_id BIGINT NOT NULL` references the consumer service's `consumers.id` by convention, but there is no SQL-level `FOREIGN KEY` constraint. Cross-service foreign keys are deliberately avoided in an Encore multi-service architecture because each service owns its own database schema. Referential integrity is enforced at the application layer:
 
-- `CreateAccount` should validate that the `consumer_id` exists by calling `GET /consumers/:id` before inserting (not yet implemented — noted as future work for Phase 3).
+- The `contact` service validates `consumer_id` existence via `consumer.GetConsumer` before starting a workflow. The account service itself does not validate cross-service references at create time — this is accepted in the multi-service architecture where each service owns its own DB.
 - The lack of a DB-level FK means a stale `consumer_id` is possible if a consumer record is deleted. Since consumer records are never deleted (only soft-state changes), this is acceptable in v1.
 
 ### `account_status` as a PostgreSQL ENUM

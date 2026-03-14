@@ -48,7 +48,11 @@ The tradeoff: there is a small window (the Pub/Sub delivery latency, typically <
 Consumer financial data (account numbers, balances, SSNs) lives in the `account` service or is sanitized by the compliance PII sanitizer before storage. The consumer service intentionally holds only contact metadata, not financial account details.
 
 ### Audit trail
-All consent changes must produce an audit log entry (implemented in Phase 3 via the `audit` service subscribing to `consent-changed`). Compliance officers require an immutable record of every consent revocation with a timestamp for TCPA audit purposes.
+All consent changes produce audit log entries via the `audit` service subscribing to the `consent-changed` Pub/Sub topic. The audit subscriber records the full event payload (consumer ID, new consent status, timestamp) with a `correlation_id` in metadata for cross-service tracing. Compliance officers can query `GET /audit/consumer/:id` to retrieve the complete consent change history.
+
+## File Organization
+
+Event types and Pub/Sub topic definitions live in `events.go`, matching the pattern used by the `contact` service. This keeps `consumer.go` focused on API handlers and `models.go` focused on domain types. The `pubsub` import is only needed in `events.go`.
 
 ## Error Codes
 

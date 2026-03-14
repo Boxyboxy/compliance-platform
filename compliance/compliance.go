@@ -23,12 +23,6 @@ type complianceViolationLabels struct {
 
 var complianceViolations = metrics.NewCounterGroup[complianceViolationLabels, uint64]("compliance_violation_total", metrics.CounterConfig{})
 
-var validChannels = map[string]bool{
-	"sms":   true,
-	"email": true,
-	"voice": true,
-}
-
 // CheckContact runs all pre-contact compliance rules and returns the aggregate
 // result. All five rules evaluate on every call (non-short-circuit) so the
 // caller receives the complete set of violations.
@@ -38,7 +32,7 @@ func (s *Service) CheckContact(ctx context.Context, req *ContactCheckRequest) (*
 	if req.ConsumerID <= 0 {
 		return nil, &errs.Error{Code: errs.InvalidArgument, Message: "consumer_id is required"}
 	}
-	if !validChannels[req.Channel] {
+	if !req.Channel.Valid() {
 		return nil, &errs.Error{Code: errs.InvalidArgument, Message: "channel must be sms, email, or voice"}
 	}
 	if req.Timezone == "" {

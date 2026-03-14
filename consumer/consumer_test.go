@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"testing"
+
+	"compliance-platform/internal/domain"
 )
 
 // newSvc returns a zero-value Service for testing.
@@ -177,14 +179,14 @@ func TestUpdateConsent(t *testing.T) {
 	tests := []struct {
 		name          string
 		externalID    string
-		consentStatus string
+		consentStatus domain.ConsentStatus
 		wantErr       bool
 		check         func(t *testing.T, got *Consumer)
 	}{
 		{
 			name:          "revoke consent",
 			externalID:    "ext-consent-001",
-			consentStatus: "revoked",
+			consentStatus: domain.ConsentRevoked,
 			check: func(t *testing.T, got *Consumer) {
 				if got.ConsentStatus != "revoked" {
 					t.Errorf("ConsentStatus = %q, want %q", got.ConsentStatus, "revoked")
@@ -194,7 +196,7 @@ func TestUpdateConsent(t *testing.T) {
 		{
 			name:          "grant consent",
 			externalID:    "ext-consent-002",
-			consentStatus: "granted",
+			consentStatus: domain.ConsentGranted,
 			check: func(t *testing.T, got *Consumer) {
 				if got.ConsentStatus != "granted" {
 					t.Errorf("ConsentStatus = %q, want %q", got.ConsentStatus, "granted")
@@ -204,7 +206,7 @@ func TestUpdateConsent(t *testing.T) {
 		{
 			name:          "invalid consent status",
 			externalID:    "ext-consent-003",
-			consentStatus: "unknown",
+			consentStatus: domain.ConsentStatus("unknown"),
 			wantErr:       true,
 		},
 	}

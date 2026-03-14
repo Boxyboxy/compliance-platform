@@ -3,6 +3,8 @@ package compliance
 import (
 	"testing"
 	"time"
+
+	"compliance-platform/internal/domain"
 )
 
 func mustLoadLocation(name string) *time.Location {
@@ -74,8 +76,8 @@ func TestTimeWindowRule(t *testing.T) {
 			req := &ContactCheckRequest{
 				Timezone:      tt.timezone,
 				CheckTime:     &tt.checkTime,
-				Channel:       "voice",
-				ConsentStatus: "granted",
+				Channel:       domain.ChannelVoice,
+				ConsentStatus: domain.ConsentGranted,
 			}
 			v := rule.Evaluate(req)
 			gotAllow := v == nil
@@ -92,7 +94,7 @@ func TestTimeWindowRule_InvalidTimezone(t *testing.T) {
 	req := &ContactCheckRequest{
 		Timezone:  "Invalid/Timezone",
 		CheckTime: &now,
-		Channel:   "voice",
+		Channel:   domain.ChannelVoice,
 	}
 	v := rule.Evaluate(req)
 	if v == nil {
@@ -144,8 +146,8 @@ func TestFrequencyCapRule(t *testing.T) {
 			req := &ContactCheckRequest{
 				CheckTime:               &now,
 				RecentContactTimestamps: tt.timestamps,
-				Channel:                 "voice",
-				ConsentStatus:           "granted",
+				Channel:                 domain.ChannelVoice,
+				ConsentStatus:           domain.ConsentGranted,
 			}
 			v := rule.Evaluate(req)
 			gotAllow := v == nil
@@ -198,14 +200,14 @@ func TestConsentCheckRule(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		consentStatus string
+		consentStatus domain.ConsentStatus
 		doNotContact  bool
 		wantAllow     bool
 	}{
-		{"granted + no DNC - allow", "granted", false, true},
-		{"revoked - block", "revoked", false, false},
-		{"granted + DNC true - block", "granted", true, false},
-		{"revoked + DNC true - block", "revoked", true, false},
+		{"granted + no DNC - allow", domain.ConsentGranted, false, true},
+		{"revoked - block", domain.ConsentRevoked, false, false},
+		{"granted + DNC true - block", domain.ConsentGranted, true, false},
+		{"revoked + DNC true - block", domain.ConsentRevoked, true, false},
 	}
 
 	for _, tt := range tests {
@@ -235,32 +237,32 @@ func TestOptOutValidationRule(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		channel        string
+		channel        domain.Channel
 		messageContent string
 		wantAllow      bool
 	}{
 		// SMS with opt-out keywords
-		{"sms with reply STOP - pass", "sms", "Your balance is $500. Reply STOP to opt out.", true},
-		{"sms with unsubscribe - pass", "sms", "Click here to unsubscribe from messages.", true},
-		{"sms with stop - pass", "sms", "Text STOP to stop receiving messages.", true},
-		{"sms without opt-out - fail", "sms", "Your balance is $500. Please pay now.", false},
+		{"sms with reply STOP - pass", domain.ChannelSMS, "Your balance is $500. Reply STOP to opt out.", true},
+		{"sms with unsubscribe - pass", domain.ChannelSMS, "Click here to unsubscribe from messages.", true},
+		{"sms with stop - pass", domain.ChannelSMS, "Text STOP to stop receiving messages.", true},
+		{"sms without opt-out - fail", domain.ChannelSMS, "Your balance is $500. Please pay now.", false},
 
 		// Email with opt-out keywords
-		{"email with unsubscribe - pass", "email", "To unsubscribe, click the link below.", true},
-		{"email with opt out - pass", "email", "You may opt out of these communications.", true},
-		{"email without opt-out - fail", "email", "Dear customer, please contact us.", false},
+		{"email with unsubscribe - pass", domain.ChannelEmail, "To unsubscribe, click the link below.", true},
+		{"email with opt out - pass", domain.ChannelEmail, "You may opt out of these communications.", true},
+		{"email without opt-out - fail", domain.ChannelEmail, "Dear customer, please contact us.", false},
 
 		// Voice is exempt
-		{"voice skips check", "voice", "Hello, this is a call about your account.", true},
-		{"voice with no content skips", "voice", "", true},
+		{"voice skips check", domain.ChannelVoice, "Hello, this is a call about your account.", true},
+		{"voice with no content skips", domain.ChannelVoice, "", true},
 
 		// Empty message content — rule passes (message not yet generated)
-		{"sms empty content - pass", "sms", "", true},
-		{"email empty content - pass", "email", "", true},
+		{"sms empty content - pass", domain.ChannelSMS, "", true},
+		{"email empty content - pass", domain.ChannelEmail, "", true},
 
 		// Case insensitive
-		{"sms UNSUBSCRIBE uppercase - pass", "sms", "UNSUBSCRIBE from this list.", true},
-		{"sms OPT OUT mixed case - pass", "sms", "Opt Out of further contact.", true},
+		{"sms UNSUBSCRIBE uppercase - pass", domain.ChannelSMS, "UNSUBSCRIBE from this list.", true},
+		{"sms OPT OUT mixed case - pass", domain.ChannelSMS, "Opt Out of further contact.", true},
 	}
 
 	for _, tt := range tests {
@@ -289,9 +291,9 @@ func TestRunAllRules_AllPass(t *testing.T) {
 	now := timeInLoc("America/New_York", 10, 0)
 	req := &ContactCheckRequest{
 		ConsumerID:              1,
-		Channel:                 "sms",
+		Channel:                 domain.ChannelSMS,
 		Timezone:                "America/New_York",
-		ConsentStatus:           "granted",
+		ConsentStatus:           domain.ConsentGranted,
 		DoNotContact:            false,
 		AttorneyOnFile:          false,
 		RecentContactTimestamps: nTimestamps(3, now.Add(-2*time.Hour)),
@@ -314,9 +316,9 @@ func TestRunAllRules_MultipleViolations(t *testing.T) {
 	now := timeInLoc("America/New_York", 7, 0)
 	req := &ContactCheckRequest{
 		ConsumerID:              1,
-		Channel:                 "sms",
+		Channel:                 domain.ChannelSMS,
 		Timezone:                "America/New_York",
-		ConsentStatus:           "revoked",
+		ConsentStatus:           domain.ConsentRevoked,
 		DoNotContact:            false,
 		AttorneyOnFile:          true,
 		RecentContactTimestamps: nTimestamps(8, now.Add(-2*time.Hour)),
@@ -348,9 +350,9 @@ func TestRunAllRules_ViolationsAlwaysNonNil(t *testing.T) {
 	now := timeInLoc("America/New_York", 10, 0)
 	req := &ContactCheckRequest{
 		ConsumerID:    1,
-		Channel:       "voice",
+		Channel:       domain.ChannelVoice,
 		Timezone:      "America/New_York",
-		ConsentStatus: "granted",
+		ConsentStatus: domain.ConsentGranted,
 		CheckTime:     &now,
 	}
 	result := RunAllRules(req, DefaultRules())

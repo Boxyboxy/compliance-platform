@@ -9,19 +9,15 @@ import (
 
 	"encore.dev/beta/errs"
 	"encore.dev/metrics"
-	"encore.dev/pubsub"
 	"encore.dev/rlog"
 	"encore.dev/storage/sqldb"
+
+	"compliance-platform/internal/domain"
 )
 
 // db is the Encore-managed PostgreSQL database for the consumer service.
 var db = sqldb.NewDatabase("consumer", sqldb.DatabaseConfig{
 	Migrations: "./migrations",
-})
-
-// ConsentChanged is published whenever a consumer's consent status is revoked.
-var ConsentChanged = pubsub.NewTopic[*ConsentChangedEvent]("consent-changed", pubsub.TopicConfig{
-	DeliveryGuarantee: pubsub.AtLeastOnce,
 })
 
 // --- Metrics ---
@@ -118,7 +114,7 @@ func (s *Service) GetConsumer(ctx context.Context, id int64) (*Consumer, error) 
 //
 //encore:api public method=PUT path=/consumers/:id/consent
 func (s *Service) UpdateConsent(ctx context.Context, id int64, req *UpdateConsentReq) (*Consumer, error) {
-	if req.ConsentStatus != "granted" && req.ConsentStatus != "revoked" {
+	if !req.ConsentStatus.Valid() {
 		return nil, &errs.Error{
 			Code:    errs.InvalidArgument,
 			Message: "consent_status must be 'granted' or 'revoked'",
@@ -131,7 +127,7 @@ func (s *Service) UpdateConsent(ctx context.Context, id int64, req *UpdateConsen
 		WHERE id = $2
 		RETURNING id, external_id, first_name, last_name, phone, email, timezone,
 		          consent_status, do_not_contact, attorney_on_file, created_at, updated_at
-	`, req.ConsentStatus, id)
+	`, string(req.ConsentStatus), id)
 
 	c, err := scanConsumer(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -141,7 +137,7 @@ func (s *Service) UpdateConsent(ctx context.Context, id int64, req *UpdateConsen
 		return nil, fmt.Errorf("updating consent for consumer %d: %w", id, err)
 	}
 
-	if req.ConsentStatus == "revoked" {
+	if req.ConsentStatus == domain.ConsentRevoked {
 		_, pubErr := ConsentChanged.Publish(ctx, &ConsentChangedEvent{
 			ConsumerID:    c.ID,
 			ConsentStatus: c.ConsentStatus,
@@ -166,15 +162,9 @@ func (s *Service) UpdateConsent(ctx context.Context, id int64, req *UpdateConsen
 	return c, nil
 }
 
-// scanner is satisfied by both *sqldb.Row (single-row queries) and *sqldb.Rows
-// (multi-row iteration), allowing scanConsumer to be used in both contexts.
-type scanner interface {
-	Scan(dest ...any) error
-}
-
 // scanConsumer reads a Consumer from any row-like value.
 // Handles nullable phone/email via sql.NullString.
-func scanConsumer(s scanner) (*Consumer, error) {
+func scanConsumer(s domain.Scanner) (*Consumer, error) {
 	var c Consumer
 	var dbPhone, dbEmail sql.NullString
 	if err := s.Scan(

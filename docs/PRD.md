@@ -1,8 +1,8 @@
 # Product Requirements Document: Krew Backend Platform
 
 **Product**: Krew Backend Platform (Codename: "The Rails")
-**Last Updated**: March 2026
-**Status**: Draft
+**Last Updated**: March 14, 2026
+**Status**: Phase 3 Complete — Contact Orchestration, Audit, and Scoring wired
 **Tech Spec**: See `TD.md`
 
 ---
@@ -273,17 +273,20 @@ Scorecard evaluator:
 
 ## 9. Release Phases
 
-### Phase 1: Foundation (MVP)
-Consumer + Account CRUD, compliance engine with all five rules, PII sanitizer, basic tests. **This alone is demonstrable in an interview.**
+### Phase 1: Foundation ✅
+Consumer + Account CRUD, table-driven tests. Establishes the data model and service-per-directory pattern.
 
-### Phase 2: Contact Orchestration
-Temporal ContactWorkflow, contact attempt recording, Pub/Sub events, audit logging. **This shows event-driven architecture and durable execution.**
+### Phase 2: Compliance Engine ✅
+Rules engine (all five TCPA/FDCPA rules), PII sanitizer, scorecard evaluator. Heavy parametrized test coverage (>30 table-driven cases for rules alone). **The centerpiece of the platform — every rule is a pure function, fully testable without infrastructure.**
 
-### Phase 3: Scoring & Payment
-Async interaction scoring, payment plan lifecycle, PaymentPlanWorkflow (stretch). **This shows async patterns and long-running workflow design.**
+### Phase 3: Contact Orchestration + Audit + Scoring ✅
+Temporal `ContactWorkflow` with 7 activities (compliance check → sanitize → deliver → score → record → publish events). Append-only audit service with Pub/Sub subscribers for `contact-attempted` and `interaction-created` events. Scoring service skeleton wired to `interaction-created`. Consent revocation propagation cancels pending contacts via Pub/Sub subscriber. **This shows event-driven architecture, durable execution, and cross-service coordination.**
 
-### Phase 4: Polish
-ADR, test coverage reports, README, architecture diagrams. **This shows engineering maturity.**
+### Phase 4: Payment Plans + Scoring Implementation
+Payment plan CRUD and lifecycle (propose → accept → active → completed/defaulted). Full scoring service implementation with per-client rubric lookup and async re-scoring. `PaymentPlanWorkflow` with Temporal signals and durable timers (stretch). **This shows long-running workflow design and async patterns.**
+
+### Phase 5: Polish
+ADR, test coverage reports, README, architecture diagrams, OpenTelemetry integration for Temporal trace propagation. **This shows engineering maturity.**
 
 ---
 

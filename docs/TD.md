@@ -520,74 +520,86 @@ var PaymentUpdated = pubsub.NewTopic[*PaymentUpdatedEvent]("payment-updated", pu
 
 ## Encore Project Structure
 
+Files marked with ✅ are implemented; unmarked files are planned for future phases.
+
 ```
-krew-platform/
+compliance-platform/
 ├── encore.app
 ├── go.mod
 ├── go.sum
+├── CLAUDE.md                         # ✅ Project instructions for Claude Code
 │
 ├── consumer/
-│   ├── consumer.go           # Service + API handlers
-│   ├── models.go             # Structs
-│   ├── consumer_test.go
+│   ├── consumer.go                   # ✅ Service + API handlers (CreateConsumer, GetConsumer, UpdateConsent)
+│   ├── models.go                     # ✅ Consumer, CreateConsumerReq, UpdateConsentReq
+│   ├── events.go                     # ✅ ConsentChangedEvent + consent-changed topic
+│   ├── consumer_test.go              # ✅ Table-driven tests
+│   ├── DESIGN.md                     # ✅ Design notes
 │   └── migrations/
-│       └── 1_create_tables.up.sql
+│       └── 1_create_tables.up.sql    # ✅
 │
 ├── account/
-│   ├── account.go
-│   ├── models.go
-│   ├── account_test.go
+│   ├── account.go                    # ✅ Service + API handlers (CRUD + status transitions)
+│   ├── models.go                     # ✅ Account, validStatuses map
+│   ├── account_test.go              # ✅ Table-driven tests including status transitions
+│   ├── DESIGN.md                     # ✅ Design notes
 │   └── migrations/
-│       └── 1_create_tables.up.sql
+│       └── 1_create_tables.up.sql    # ✅
 │
 ├── compliance/
-│   ├── compliance.go         # Service + API handlers
-│   ├── rules.go              # Pre-contact check rules
-│   ├── sanitizer.go          # PII redaction
-│   ├── scorecard.go          # Scorecard evaluator
-│   ├── rules_test.go         # HEAVY test coverage here
-│   ├── sanitizer_test.go
-│   └── scorecard_test.go
+│   ├── compliance.go                 # ✅ Service + API handlers (CheckContact, SanitizeText, ScoreInteraction)
+│   ├── models.go                     # ✅ Rule interface, request/response types, scorecard types
+│   ├── rules.go                      # ✅ 5 rules: TimeWindow, FrequencyCap, AttorneyBlock, ConsentCheck, OptOut
+│   ├── sanitizer.go                  # ✅ PII redaction (SSN, CC, phone)
+│   ├── scorecard.go                  # ✅ Keyword-based scorecard evaluator
+│   ├── rules_test.go                 # ✅ 30+ table-driven cases
+│   ├── sanitizer_test.go             # ✅
+│   ├── scorecard_test.go             # ✅
+│   ├── compliance_test.go            # ✅ API handler tests
+│   └── DESIGN.md                     # ✅ Design notes
 │
 ├── contact/
-│   ├── contact.go            # Service + API handlers
-│   ├── models.go
-│   ├── events.go             # Pub/Sub topic definitions
-│   ├── contact_test.go
+│   ├── contact.go                    # ✅ Service + API handlers + Temporal workflow trigger
+│   ├── models.go                     # ✅ ContactAttempt, request/response types
+│   ├── events.go                     # ✅ ContactAttempted + InteractionCreated topics
+│   ├── subscribers.go                # ✅ consent-changed subscriber (blocks pending contacts)
+│   ├── contact_test.go              # ✅ ListContacts, UpdateContactResult, validation, consent revocation
+│   ├── DESIGN.md                     # ✅ Design notes
 │   └── migrations/
-│       └── 1_create_tables.up.sql
+│       └── 1_create_tables.up.sql    # ✅
 │
-├── payment/
+├── audit/
+│   ├── audit.go                      # ✅ RecordAudit (private) + GetAuditLog (public)
+│   ├── models.go                     # ✅ AuditEntry, RecordAuditReq
+│   ├── subscribers.go                # ✅ contact-attempted + interaction-created subscribers
+│   ├── audit_test.go                # ✅ RecordAudit + GetAuditLog tests
+│   ├── DESIGN.md                     # ✅ Design notes
+│   └── migrations/
+│       └── 1_create_tables.up.sql    # ✅
+│
+├── scoring/
+│   ├── subscribers.go                # ✅ interaction-created subscriber (stub — Phase 4 implements full scoring)
+│   └── DESIGN.md                     # ✅ Design notes
+│
+├── workflows/
+│   ├── contact_workflow.go           # ✅ ContactWorkflow (7 steps)
+│   ├── activities.go                 # ✅ HTTP-based activities (no Encore imports)
+│   ├── models.go                     # ✅ Workflow input/output types, activity I/O mirrors
+│   ├── contact_workflow_test.go      # ✅ 5 test cases using Temporal test suite
+│   ├── DESIGN.md                     # ✅ Design notes
+│   └── worker/
+│       └── main.go                   # ✅ Temporal worker binary
+│
+├── payment/                          # Phase 4
 │   ├── payment.go
 │   ├── models.go
 │   ├── events.go
-│   ├── payment_test.go
 │   └── migrations/
 │       └── 1_create_tables.up.sql
-│
-├── audit/
-│   ├── audit.go
-│   ├── subscribers.go        # Pub/Sub subscribers
-│   ├── audit_test.go
-│   └── migrations/
-│       └── 1_create_tables.up.sql
-│
-├── scoring/
-│   ├── scoring.go
-│   ├── subscribers.go
-│   └── scoring_test.go
-│
-├── workflows/                # Temporal workflow + activity definitions
-│   ├── contact_workflow.go
-│   ├── contact_activities.go
-│   ├── payment_workflow.go   # stretch goal
-│   ├── payment_activities.go
-│   ├── contact_workflow_test.go
-│   └── worker/
-│       └── main.go           # Temporal worker process
 │
 └── docs/
-    └── adr-001-architecture.md
+    ├── PRD.md                        # ✅ Product requirements
+    └── TD.md                         # ✅ Technical design (this file)
 ```
 
 ---
@@ -951,38 +963,36 @@ This endpoint is what load balancers and uptime monitors call. It is distinct fr
 
 ---
 
-## Build Order (suggested sequence for Claude Code)
+## Build Order
 
-### Phase 1: Foundation
-1. `encore app create krew-platform`
-2. `consumer` service — DB migration + CRUD APIs
-3. `account` service — DB migration + CRUD APIs
-4. Basic tests for both
+### Phase 1: Foundation ✅
+1. `consumer` service — DB migration + CRUD APIs + table-driven tests
+2. `account` service — DB migration + CRUD APIs + table-driven tests
 
-### Phase 2: Compliance Engine
-5. `compliance` service — rules engine (pre-contact check)
-6. PII sanitizer
-7. Scorecard evaluator
-8. **Heavy unit tests** for all three
+### Phase 2: Compliance Engine ✅
+3. `compliance` service — rules engine (pre-contact check) with `Rule` interface
+4. PII sanitizer — regex-based redaction (CC → SSN → phone ordering)
+5. Scorecard evaluator — keyword-based, JSON-configurable rubrics
+6. **Heavy unit tests** for all three (30+ table-driven cases for rules)
 
-### Phase 3: Contact Workflow
-9. `contact` service — DB + API
-10. Temporal workflow + activities (with stubs for Daniel)
-11. Pub/Sub topics + events
-12. Integration test: full contact lifecycle
+### Phase 3: Contact Orchestration + Audit + Scoring ✅
+7. `contact` service — DB + API + Temporal workflow trigger
+8. `workflows/` package — ContactWorkflow with 7 activities, HTTP-only (no Encore imports)
+9. `audit` service — append-only log + Pub/Sub subscribers for contact events
+10. `scoring` service — subscriber skeleton wired to `interaction-created`
+11. Pub/Sub topics: `contact-attempted`, `interaction-created`, `consent-changed`
+12. Consent revocation subscriber cancels pending contacts
+13. Workflow tests using `go.temporal.io/sdk/testsuite`
 
-### Phase 4: Audit & Scoring
-13. `audit` service — append-only log + subscribers
-14. `scoring` service — subscriber that scores interactions
-15. Wire up Pub/Sub subscriptions
+### Phase 4: Payment + Scoring (next)
+14. `payment` service — CRUD + events
+15. Full scoring service implementation with per-client rubric lookup
+16. Temporal `PaymentPlanWorkflow` with signals + timers (stretch)
 
-### Phase 5: Payment (stretch)
-16. `payment` service — CRUD + events
-17. Temporal `PaymentPlanWorkflow` with signals + timers
-
-### Phase 6: Polish
-18. ADR document
-19. Test coverage report
+### Phase 5: Polish
+17. ADR document
+18. Test coverage report
+19. OpenTelemetry integration for Temporal trace propagation
 20. README with architecture diagram
 
 ---

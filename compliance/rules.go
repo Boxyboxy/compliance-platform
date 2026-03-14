@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"compliance-platform/internal/domain"
 )
 
 // ---------------------------------------------------------------------------
@@ -112,7 +114,7 @@ func (r *AttorneyBlockRule) Evaluate(req *ContactCheckRequest) *Violation {
 type ConsentCheckRule struct{}
 
 func (r *ConsentCheckRule) Evaluate(req *ContactCheckRequest) *Violation {
-	if req.ConsentStatus == "revoked" {
+	if req.ConsentStatus == domain.ConsentRevoked {
 		return &Violation{
 			Rule:    "consent_check",
 			Details: "consumer consent has been revoked",
@@ -139,7 +141,7 @@ type OptOutValidationRule struct{}
 var optOutKeywords = []string{"opt out", "unsubscribe", "stop", "reply stop"}
 
 func (r *OptOutValidationRule) Evaluate(req *ContactCheckRequest) *Violation {
-	channel := strings.ToLower(req.Channel)
+	channel := strings.ToLower(string(req.Channel))
 	if channel != "sms" && channel != "email" {
 		return nil
 	}

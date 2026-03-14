@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"compliance-platform/internal/domain"
 )
 
 func newSvc() *Service {
@@ -20,9 +22,9 @@ func TestCheckContact_Valid(t *testing.T) {
 
 	result, err := svc.CheckContact(context.Background(), &ContactCheckRequest{
 		ConsumerID:    1,
-		Channel:       "voice",
+		Channel:       domain.ChannelVoice,
 		Timezone:      "America/New_York",
-		ConsentStatus: "granted",
+		ConsentStatus: domain.ConsentGranted,
 		CheckTime:     &now,
 	})
 	if err != nil {
@@ -39,9 +41,9 @@ func TestCheckContact_Blocked(t *testing.T) {
 
 	result, err := svc.CheckContact(context.Background(), &ContactCheckRequest{
 		ConsumerID:    1,
-		Channel:       "voice",
+		Channel:       domain.ChannelVoice,
 		Timezone:      "America/New_York",
-		ConsentStatus: "granted",
+		ConsentStatus: domain.ConsentGranted,
 		CheckTime:     &now,
 	})
 	if err != nil {
@@ -59,9 +61,9 @@ func TestCheckContact_ValidationErrors(t *testing.T) {
 		name string
 		req  *ContactCheckRequest
 	}{
-		{"missing consumer_id", &ContactCheckRequest{Channel: "sms", Timezone: "America/New_York"}},
-		{"invalid channel", &ContactCheckRequest{ConsumerID: 1, Channel: "fax", Timezone: "America/New_York"}},
-		{"missing timezone", &ContactCheckRequest{ConsumerID: 1, Channel: "sms"}},
+		{"missing consumer_id", &ContactCheckRequest{Channel: domain.ChannelSMS, Timezone: "America/New_York"}},
+		{"invalid channel", &ContactCheckRequest{ConsumerID: 1, Channel: domain.Channel("fax"), Timezone: "America/New_York"}},
+		{"missing timezone", &ContactCheckRequest{ConsumerID: 1, Channel: domain.ChannelSMS}},
 	}
 
 	for _, tt := range tests {
@@ -165,9 +167,9 @@ func TestCheckContact_MetricsRecorded(t *testing.T) {
 
 	result, err := svc.CheckContact(context.Background(), &ContactCheckRequest{
 		ConsumerID:              1,
-		Channel:                 "sms",
+		Channel:                 domain.ChannelSMS,
 		Timezone:                "America/New_York",
-		ConsentStatus:           "revoked",
+		ConsentStatus:           domain.ConsentRevoked,
 		AttorneyOnFile:          true,
 		RecentContactTimestamps: nTimestamps(8, now.Add(-1*time.Hour)),
 		MessageContent:          "Pay now.",

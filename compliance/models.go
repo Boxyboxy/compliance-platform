@@ -1,6 +1,10 @@
 package compliance
 
-import "time"
+import (
+	"time"
+
+	"compliance-platform/internal/domain"
+)
 
 // Rule defines the interface for a compliance rule. Each rule evaluates
 // independently and returns a violation if the check fails, or nil if it passes.
@@ -17,15 +21,15 @@ type Rule interface {
 // test), and avoids circular dependencies when the contact service later
 // calls compliance for pre-checks.
 type ContactCheckRequest struct {
-	ConsumerID              int64      `json:"consumer_id"`
-	Channel                 string     `json:"channel"`                            // "sms", "email", "voice"
-	Timezone                string     `json:"timezone"`                           // IANA timezone e.g. "America/New_York"
-	ConsentStatus           string     `json:"consent_status"`                     // "granted" or "revoked"
-	DoNotContact            bool       `json:"do_not_contact"`                     // regulatory do-not-contact flag
-	AttorneyOnFile          bool       `json:"attorney_on_file"`                   // FDCPA § 805(a)(2)
-	RecentContactTimestamps []time.Time `json:"recent_contact_timestamps,omitempty"` // trailing contact attempts for frequency cap
-	MessageContent          string     `json:"message_content,omitempty"`          // outbound payload for opt-out validation
-	CheckTime               *time.Time `json:"check_time,omitempty"`               // override for testing; defaults to time.Now()
+	ConsumerID              int64                `json:"consumer_id"`
+	Channel                 domain.Channel       `json:"channel"`                              // "sms", "email", "voice"
+	Timezone                string               `json:"timezone"`                              // IANA timezone e.g. "America/New_York"
+	ConsentStatus           domain.ConsentStatus `json:"consent_status"`                        // "granted" or "revoked"
+	DoNotContact            bool                 `json:"do_not_contact"`                        // regulatory do-not-contact flag
+	AttorneyOnFile          bool                 `json:"attorney_on_file"`                      // FDCPA § 805(a)(2)
+	RecentContactTimestamps []time.Time          `json:"recent_contact_timestamps,omitempty"`   // trailing contact attempts for frequency cap
+	MessageContent          string               `json:"message_content,omitempty"`             // outbound payload for opt-out validation
+	CheckTime               *time.Time           `json:"check_time,omitempty"`                  // override for testing; defaults to time.Now()
 }
 
 // ContactCheckResult is the response from a pre-contact compliance check.

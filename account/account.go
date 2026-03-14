@@ -10,6 +10,8 @@ import (
 	"encore.dev/metrics"
 	"encore.dev/rlog"
 	"encore.dev/storage/sqldb"
+
+	"compliance-platform/internal/domain"
 )
 
 // db is the Encore-managed PostgreSQL database for the account service.
@@ -57,9 +59,9 @@ func (s *Service) CreateAccount(ctx context.Context, req *CreateAccountReq) (*Ac
 
 	status := req.Status
 	if status == "" {
-		status = "current"
+		status = domain.AccountStatusCurrent
 	}
-	if !validStatuses[status] {
+	if !status.Valid() {
 		return nil, &errs.Error{
 			Code:    errs.InvalidArgument,
 			Message: fmt.Sprintf("invalid status %q; must be one of: current, delinquent, charged_off, settled, closed", status),
@@ -73,7 +75,7 @@ func (s *Service) CreateAccount(ctx context.Context, req *CreateAccountReq) (*Ac
 		RETURNING id, consumer_id, original_creditor, account_number,
 		          balance_due, days_past_due, status, created_at, updated_at
 	`, req.ConsumerID, req.OriginalCreditor, req.AccountNumber,
-		req.BalanceDue, req.DaysPastDue, status)
+		req.BalanceDue, req.DaysPastDue, string(status))
 
 	a, err := scanAccount(row)
 	if err != nil {
@@ -157,7 +159,7 @@ func (s *Service) ListAccountsByConsumer(ctx context.Context, consumerId int64) 
 //
 //encore:api public method=PATCH path=/accounts/:id/status
 func (s *Service) UpdateAccountStatus(ctx context.Context, id int64, req *UpdateStatusReq) (*Account, error) {
-	if !validStatuses[req.Status] {
+	if !req.Status.Valid() {
 		return nil, &errs.Error{
 			Code:    errs.InvalidArgument,
 			Message: fmt.Sprintf("invalid status %q; must be one of: current, delinquent, charged_off, settled, closed", req.Status),
@@ -176,7 +178,7 @@ func (s *Service) UpdateAccountStatus(ctx context.Context, id int64, req *Update
 		RETURNING id, consumer_id, original_creditor, account_number,
 		          balance_due, days_past_due, status, created_at, updated_at,
 		          (SELECT status FROM prev)
-	`, req.Status, id).Scan(
+	`, string(req.Status), id).Scan(
 		&a.ID, &a.ConsumerID, &a.OriginalCreditor, &a.AccountNumber,
 		&a.BalanceDue, &a.DaysPastDue, &a.Status, &a.CreatedAt, &a.UpdatedAt,
 		&prevStatus,
@@ -188,7 +190,7 @@ func (s *Service) UpdateAccountStatus(ctx context.Context, id int64, req *Update
 		return nil, fmt.Errorf("updating status for account %d: %w", id, err)
 	}
 
-	accountStatusTransitions.With(statusTransitionLabels{From: prevStatus, To: a.Status}).Increment()
+	accountStatusTransitions.With(statusTransitionLabels{From: prevStatus, To: string(a.Status)}).Increment()
 	rlog.Info("account status updated",
 		"service", "account",
 		"id", a.ID,
@@ -197,14 +199,8 @@ func (s *Service) UpdateAccountStatus(ctx context.Context, id int64, req *Update
 	return &a, nil
 }
 
-// scanner is satisfied by both *sqldb.Row and *sqldb.Rows, so scanAccount
-// can be used for single-row queries and inside rows.Next() loops alike.
-type scanner interface {
-	Scan(dest ...any) error
-}
-
 // scanAccount reads an Account from any row-like value.
-func scanAccount(s scanner) (*Account, error) {
+func scanAccount(s domain.Scanner) (*Account, error) {
 	var a Account
 	if err := s.Scan(
 		&a.ID, &a.ConsumerID, &a.OriginalCreditor, &a.AccountNumber,

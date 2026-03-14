@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"testing"
+
+	"compliance-platform/internal/domain"
 )
 
 func newSvc() *Service { return &Service{} }
@@ -27,14 +29,14 @@ func TestCreateAccount(t *testing.T) {
 				AccountNumber:    "ACCT-0001",
 				BalanceDue:       2500.00,
 				DaysPastDue:      45,
-				Status:           "delinquent",
+				Status:           domain.AccountStatusDelinquent,
 			},
 			check: func(t *testing.T, got *Account) {
 				if got.ID == 0 {
 					t.Error("expected non-zero ID")
 				}
-				if got.Status != "delinquent" {
-					t.Errorf("Status = %q, want %q", got.Status, "delinquent")
+				if got.Status != domain.AccountStatusDelinquent {
+					t.Errorf("Status = %q, want %q", got.Status, domain.AccountStatusDelinquent)
 				}
 				if got.BalanceDue != 2500.00 {
 					t.Errorf("BalanceDue = %v, want %v", got.BalanceDue, 2500.00)
@@ -53,8 +55,8 @@ func TestCreateAccount(t *testing.T) {
 				BalanceDue:       150.75,
 			},
 			check: func(t *testing.T, got *Account) {
-				if got.Status != "current" {
-					t.Errorf("Status = %q, want %q", got.Status, "current")
+				if got.Status != domain.AccountStatusCurrent {
+					t.Errorf("Status = %q, want %q", got.Status, domain.AccountStatusCurrent)
 				}
 				if got.DaysPastDue != 0 {
 					t.Errorf("DaysPastDue = %d, want 0", got.DaysPastDue)
@@ -220,7 +222,7 @@ func TestUpdateAccountStatus(t *testing.T) {
 	tests := []struct {
 		name      string
 		seedReq   *CreateAccountReq
-		newStatus string
+		newStatus domain.AccountStatus
 		wantErr   bool
 		check     func(t *testing.T, got *Account)
 	}{
@@ -230,9 +232,9 @@ func TestUpdateAccountStatus(t *testing.T) {
 				ConsumerID: 4001, OriginalCreditor: "Bank A",
 				AccountNumber: "ACCT-STATUS-001", BalanceDue: 500,
 			},
-			newStatus: "delinquent",
+			newStatus: domain.AccountStatusDelinquent,
 			check: func(t *testing.T, got *Account) {
-				if got.Status != "delinquent" {
+				if got.Status != domain.AccountStatusDelinquent {
 					t.Errorf("Status = %q, want %q", got.Status, "delinquent")
 				}
 			},
@@ -241,11 +243,11 @@ func TestUpdateAccountStatus(t *testing.T) {
 			name: "delinquent to charged_off",
 			seedReq: &CreateAccountReq{
 				ConsumerID: 4002, OriginalCreditor: "Bank B",
-				AccountNumber: "ACCT-STATUS-002", BalanceDue: 1200, Status: "delinquent",
+				AccountNumber: "ACCT-STATUS-002", BalanceDue: 1200, Status: domain.AccountStatusDelinquent,
 			},
-			newStatus: "charged_off",
+			newStatus: domain.AccountStatusChargedOff,
 			check: func(t *testing.T, got *Account) {
-				if got.Status != "charged_off" {
+				if got.Status != domain.AccountStatusChargedOff {
 					t.Errorf("Status = %q, want %q", got.Status, "charged_off")
 				}
 			},
@@ -254,11 +256,11 @@ func TestUpdateAccountStatus(t *testing.T) {
 			name: "to settled",
 			seedReq: &CreateAccountReq{
 				ConsumerID: 4003, OriginalCreditor: "Bank C",
-				AccountNumber: "ACCT-STATUS-003", BalanceDue: 300, Status: "charged_off",
+				AccountNumber: "ACCT-STATUS-003", BalanceDue: 300, Status: domain.AccountStatusChargedOff,
 			},
-			newStatus: "settled",
+			newStatus: domain.AccountStatusSettled,
 			check: func(t *testing.T, got *Account) {
-				if got.Status != "settled" {
+				if got.Status != domain.AccountStatusSettled {
 					t.Errorf("Status = %q, want %q", got.Status, "settled")
 				}
 			},
@@ -267,11 +269,11 @@ func TestUpdateAccountStatus(t *testing.T) {
 			name: "to closed",
 			seedReq: &CreateAccountReq{
 				ConsumerID: 4004, OriginalCreditor: "Bank D",
-				AccountNumber: "ACCT-STATUS-004", BalanceDue: 0, Status: "settled",
+				AccountNumber: "ACCT-STATUS-004", BalanceDue: 0, Status: domain.AccountStatusSettled,
 			},
-			newStatus: "closed",
+			newStatus: domain.AccountStatusClosed,
 			check: func(t *testing.T, got *Account) {
-				if got.Status != "closed" {
+				if got.Status != domain.AccountStatusClosed {
 					t.Errorf("Status = %q, want %q", got.Status, "closed")
 				}
 			},
@@ -282,7 +284,7 @@ func TestUpdateAccountStatus(t *testing.T) {
 				ConsumerID: 4005, OriginalCreditor: "Bank E",
 				AccountNumber: "ACCT-STATUS-005", BalanceDue: 100,
 			},
-			newStatus: "overdue",
+			newStatus: domain.AccountStatus("overdue"),
 			wantErr:   true,
 		},
 	}
@@ -309,7 +311,7 @@ func TestUpdateAccountStatus(t *testing.T) {
 func TestUpdateAccountStatus_NotFound(t *testing.T) {
 	svc := newSvc()
 	ctx := context.Background()
-	_, err := svc.UpdateAccountStatus(ctx, 999999999, &UpdateStatusReq{Status: "closed"})
+	_, err := svc.UpdateAccountStatus(ctx, 999999999, &UpdateStatusReq{Status: domain.AccountStatusClosed})
 	if err == nil {
 		t.Fatal("expected error for non-existent account, got nil")
 	}
