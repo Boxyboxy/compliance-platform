@@ -3,6 +3,7 @@ package consumer
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -82,6 +83,21 @@ func (s *Service) CreateConsumer(ctx context.Context, req *CreateConsumerReq) (*
 		"service", "consumer",
 		"id", c.ID,
 		"external_id", c.ExternalID)
+
+	// Publish lifecycle event for audit trail.
+	if eventData, err := json.Marshal(c); err == nil {
+		if _, pubErr := ConsumerLifecycle.Publish(ctx, &ConsumerLifecycleEvent{
+			ConsumerID: c.ID,
+			Action:     "created",
+			NewValue:   json.RawMessage(eventData),
+		}); pubErr != nil {
+			rlog.Error("consumer-lifecycle event publish failed",
+				"service", "consumer",
+				"consumer_id", c.ID,
+				"err", pubErr)
+		}
+	}
+
 	return c, nil
 }
 
@@ -137,24 +153,30 @@ func (s *Service) UpdateConsent(ctx context.Context, id int64, req *UpdateConsen
 		return nil, fmt.Errorf("updating consent for consumer %d: %w", id, err)
 	}
 
+	// Publish consent-changed event on both grant and revoke.
+	_, pubErr := ConsentChanged.Publish(ctx, &ConsentChangedEvent{
+		ConsumerID:    c.ID,
+		ConsentStatus: c.ConsentStatus,
+		ChangedAt:     time.Now().UTC().Format(time.RFC3339),
+	})
+	if pubErr != nil {
+		// The DB row is already updated. Return an error so the caller retries;
+		// a retry is safe because the UPDATE is idempotent and Publish is at-least-once.
+		consentPublishErrors.Increment()
+		rlog.Error("consent-changed event publish failed — caller should retry",
+			"service", "consumer",
+			"consumer_id", c.ID,
+			"err", pubErr)
+		return nil, fmt.Errorf("consent updated but event publish failed: %w", pubErr)
+	}
+
 	if req.ConsentStatus == domain.ConsentRevoked {
-		_, pubErr := ConsentChanged.Publish(ctx, &ConsentChangedEvent{
-			ConsumerID:    c.ID,
-			ConsentStatus: c.ConsentStatus,
-			ChangedAt:     time.Now().UTC().Format(time.RFC3339),
-		})
-		if pubErr != nil {
-			// The DB row is already updated. Return an error so the caller retries;
-			// a retry is safe because the UPDATE is idempotent and Publish is at-least-once.
-			consentPublishErrors.Increment()
-			rlog.Error("consent-changed event publish failed — caller should retry",
-				"service", "consumer",
-				"consumer_id", c.ID,
-				"err", pubErr)
-			return nil, fmt.Errorf("consent updated but event publish failed: %w", pubErr)
-		}
 		consentRevocations.Increment()
 		rlog.Info("consent revoked, event published",
+			"service", "consumer",
+			"consumer_id", c.ID)
+	} else {
+		rlog.Info("consent granted, event published",
 			"service", "consumer",
 			"consumer_id", c.ID)
 	}

@@ -1,8 +1,8 @@
 # Product Requirements Document: Krew Backend Platform
 
 **Product**: Krew Backend Platform (Codename: "The Rails")
-**Last Updated**: March 14, 2026
-**Status**: Phase 3 Complete — Contact Orchestration, Audit, and Scoring wired
+**Last Updated**: March 15, 2026
+**Status**: Phase 4 Complete — Audit pipeline complete, scoring implemented, lifecycle events on all services
 **Tech Spec**: See `TD.md`
 
 ---
@@ -117,12 +117,13 @@ Compliance officers at client institutions need:
 **User story**: As Daniel (AI agent), I need to retrieve a consumer's profile — including their timezone, consent status, and attorney flag — before initiating contact, so the platform can make a compliance decision.
 
 **Acceptance criteria**:
-- Create a consumer with required fields (external_id, name, timezone) and optional fields (phone, email)
-- Retrieve a consumer by internal ID
-- Update consent status (grant/revoke). On revocation:
-  - A `consent-changed` event is published
-  - An audit log entry is created
-  - All pending outbound contacts for this consumer are cancelled by the contact service (subscriber)
+- Create a consumer with required fields (external_id, name, timezone) and optional fields (phone, email) ✅
+- Retrieve a consumer by internal ID ✅
+- Update consent status (grant/revoke). On any consent change: ✅
+  - A `consent-changed` event is published (both grant and revoke — not only revoke)
+  - An audit log entry is created (`consent_revoked` or `consent_granted` action)
+  - On revocation: all pending outbound contacts for this consumer are cancelled by the contact service (subscriber)
+- On consumer creation: a `consumer-lifecycle` event is published; audit records a `created` entry ✅
 
 ### F2: Account Management
 
@@ -131,10 +132,11 @@ Compliance officers at client institutions need:
 **User story**: As Daniel, I need to know a consumer's outstanding balance, days past due, and account status to tailor my negotiation approach.
 
 **Acceptance criteria**:
-- Create an account linked to a consumer
-- List all accounts for a consumer
-- Update account status (current → delinquent → charged_off → settled → closed)
-- Status changes produce audit log entries
+- Create an account linked to a consumer ✅
+- List all accounts for a consumer ✅
+- Update account status (current → delinquent → charged_off → settled → closed) ✅
+- Account creation publishes an `account-lifecycle` event (`created`); audit records the new account state ✅
+- Status changes publish an `account-lifecycle` event (`status_updated`) with old/new status; audit records the transition ✅
 
 ### F3: Compliance Engine (KOMPLY-lite)
 
@@ -206,11 +208,13 @@ Scorecard evaluator:
 **User story**: As a compliance officer, I need to pull the complete history of account #7892 — every contact attempt, every consent change, every payment event — and present it to an examiner as evidence of compliant servicing.
 
 **Acceptance criteria**:
-- Every state change across all services (consumer, account, contact, payment) produces an audit entry
-- Audit entries include: entity type, entity ID, action, actor (system/api/workflow ID), old value, new value, timestamp
-- The audit table supports no UPDATE or DELETE operations at the application layer
-- Audit entries include metadata (correlation_id, workflow_id) for tracing
-- Queryable by entity type + entity ID via API
+- Every state change across all services (consumer, account, contact, payment) produces an audit entry ✅
+- Audit entries include: entity type, entity ID, action, actor (system/api/workflow ID), old value, new value, timestamp ✅
+- The audit table supports no UPDATE or DELETE operations at the application layer ✅ (enforced by both code convention and a database trigger — `2_enforce_append_only.up.sql`)
+- Audit entries include metadata (correlation_id, dedup_key) for tracing and idempotency ✅
+- Queryable by entity type + entity ID via `GET /audit/:entityType/:entityId` ✅
+- Filterable by action and time range (RFC3339 since/until) via `POST /audit/search` ✅
+- Pub/Sub subscribers are idempotent via deterministic dedup keys — duplicate events are detected and skipped ✅
 
 ### F7: Interaction Scoring
 
@@ -219,10 +223,12 @@ Scorecard evaluator:
 **User story**: As Mark (QA agent), I subscribe to completed interactions and score them against the configured rubric, surfacing whether required disclosures were delivered and computing an overall quality score.
 
 **Acceptance criteria**:
-- Subscribes to `interaction-created` Pub/Sub events
-- Runs the scorecard evaluator from the compliance service
-- Writes the scorecard result back to the contact attempt record
-- Scoring does not block the contact workflow — it runs asynchronously after delivery
+- Subscribes to `interaction-created` Pub/Sub events ✅
+- Skips events with empty `SanitizedContent` (blocked contacts produce no transcript) ✅
+- Runs the scorecard evaluator from the compliance service with a default 3-item rubric ✅
+- Writes the scorecard result back to `contact_attempts.scorecard_result` via private PATCH endpoint ✅
+- Scoring does not block the contact workflow — it runs asynchronously after delivery ✅
+- Idempotent: re-scoring with the same rubric produces the same result; the PATCH overwrite is a safe no-op ✅
 
 ---
 
@@ -282,10 +288,13 @@ Rules engine (all five TCPA/FDCPA rules), PII sanitizer, scorecard evaluator. He
 ### Phase 3: Contact Orchestration + Audit + Scoring ✅
 Temporal `ContactWorkflow` with 7 activities (compliance check → sanitize → deliver → score → record → publish events). Append-only audit service with Pub/Sub subscribers for `contact-attempted` and `interaction-created` events. Scoring service skeleton wired to `interaction-created`. Consent revocation propagation cancels pending contacts via Pub/Sub subscriber. **This shows event-driven architecture, durable execution, and cross-service coordination.**
 
-### Phase 4: Payment Plans + Scoring Implementation
-Payment plan CRUD and lifecycle (propose → accept → active → completed/defaulted). Full scoring service implementation with per-client rubric lookup and async re-scoring. `PaymentPlanWorkflow` with Temporal signals and durable timers (stretch). **This shows long-running workflow design and async patterns.**
+### Phase 4: Audit Pipeline + Scoring Implementation ✅
+Full event-driven audit pipeline: consumer and account services now publish lifecycle events (`consumer-lifecycle`, `account-lifecycle`) on every state change. Consent-changed event now fires on both grant and revoke (not only revoke). Audit service subscribes to all 6 Pub/Sub topics with per-event idempotency via dedup keys. Append-only enforcement added at the database level via a trigger. Filtered audit queries (by action, time range) added via `POST /audit/search`. Scoring service fully implemented: subscribes to `interaction-created`, calls `compliance.ScoreInteraction` with default rubric, and writes result back to `contact_attempts.scorecard_result` via private PATCH endpoint. Payment topic stub (`payment-updated`) defined. **Scoring is idempotent (overwrite is safe-no-op with same rubric) and decoupled from the contact workflow.**
 
-### Phase 5: Polish
+### Phase 5: Payment Plans + Polish (next)
+Payment plan CRUD and lifecycle (propose → accept → active → completed/defaulted). `PaymentPlanWorkflow` with Temporal signals and durable timers (stretch). ADR document, test coverage reports, README, architecture diagrams, OpenTelemetry integration for Temporal trace propagation.
+
+### Phase 6: Polish
 ADR, test coverage reports, README, architecture diagrams, OpenTelemetry integration for Temporal trace propagation. **This shows engineering maturity.**
 
 ---

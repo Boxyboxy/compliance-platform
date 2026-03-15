@@ -286,6 +286,28 @@ func (s *Service) UpdateContactResult(ctx context.Context, id int64, req *Update
 	return nil
 }
 
+// UpdateScorecardResult updates the scorecard result on a contact attempt.
+// Used by the scoring service for async re-scoring after delivery.
+//
+//encore:api private method=PATCH path=/contact/attempts/:id/scorecard
+func (s *Service) UpdateScorecardResult(ctx context.Context, id int64, req *UpdateScorecardReq) error {
+	_, err := db.Exec(ctx, `
+		UPDATE contact_attempts SET scorecard_result = $1 WHERE id = $2
+	`, []byte(req.ScorecardResult), id)
+	if err != nil {
+		rlog.Error("failed to update scorecard result",
+			"service", "contact",
+			"id", id,
+			"err", err)
+		return fmt.Errorf("updating scorecard result %d: %w", id, err)
+	}
+
+	rlog.Info("scorecard result updated",
+		"service", "contact",
+		"id", id)
+	return nil
+}
+
 // PublishContactAttempted publishes a contact-attempted event.
 // Called by the Temporal worker via HTTP since it can't use Encore Pub/Sub directly.
 //

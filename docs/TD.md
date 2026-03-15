@@ -121,7 +121,7 @@ func (s *Service) GetConsumer(ctx context.Context, id int64) (*Consumer, error)
 func (s *Service) UpdateConsent(ctx context.Context, id int64, req *UpdateConsentReq) (*Consumer, error)
 ```
 
-When consent is revoked, publish to `consent-changed` topic.
+When consent changes (grant **or** revoke), publish to `consent-changed` topic. On creation, publish to `consumer-lifecycle` topic.
 
 ---
 
@@ -160,6 +160,8 @@ func (s *Service) ListAccountsByConsumer(ctx context.Context, consumerId int64) 
 //encore:api public method=PATCH path=/accounts/:id/status
 func (s *Service) UpdateAccountStatus(ctx context.Context, id int64, req *UpdateStatusReq) (*Account, error)
 ```
+
+`CreateAccount` publishes to the `account-lifecycle` topic (`action: "created"`). `UpdateAccountStatus` publishes `action: "status_updated"` with old and new status values.
 
 ---
 
@@ -456,31 +458,59 @@ CREATE INDEX idx_audit_time   ON audit_log(created_at);
 **APIs:**
 
 ```go
+// Returns all audit entries for an entity (DESC by time).
 //encore:api public method=GET path=/audit/:entityType/:entityId
 func (s *Service) GetAuditLog(ctx context.Context, entityType string, entityId int64) (*AuditLogList, error)
+
+// Filtered query — supports action, since, until (RFC3339) filters.
+//encore:api public method=POST path=/audit/search
+func (s *Service) SearchAuditLog(ctx context.Context, params *GetAuditLogParams) (*AuditLogList, error)
 
 // Internal — called by other services
 //encore:api private method=POST path=/audit/record
 func (s *Service) RecordAudit(ctx context.Context, req *RecordAuditReq) (*AuditEntry, error)
 ```
 
-**Subscriber: listens to all Pub/Sub topics and writes audit entries.**
+**Note on `GetAuditLog` vs `SearchAuditLog`**: Encore requires path parameters to be individual function parameters, not embedded in a struct. This precludes adding optional query params to the path-based `GET` endpoint without changing its signature. `SearchAuditLog` is a POST-based search endpoint that accepts the full `GetAuditLogParams` struct (entity_type, entity_id, action, since, until) as a JSON body. Both call the same `queryAuditLog` internal implementation.
+
+**Subscribers: listens to all 6 Pub/Sub topics and writes audit entries with idempotency.**
+
+| Topic | Subscription | Action | Entity |
+|---|---|---|---|
+| `contact-attempted` | `audit-contact-attempted` | `contact_attempted` | `contact` |
+| `interaction-created` | `audit-interaction-created` | `interaction_created` | `contact` |
+| `consent-changed` | `audit-consent-changed` | `consent_revoked` or `consent_granted` | `consumer` |
+| `consumer-lifecycle` | `audit-consumer-lifecycle` | event.Action (e.g. `created`) | `consumer` |
+| `account-lifecycle` | `audit-account-lifecycle` | event.Action (e.g. `created`, `status_updated`) | `account` |
+| `payment-updated` | `audit-payment-updated` | event.EventType | `payment_plan` |
+
+**Idempotency**: Each handler computes a deterministic dedup key before inserting. `isDuplicate(ctx, key)` queries `metadata->>'dedup_key'` and skips on match. Expected under at-least-once delivery; logged at Debug level.
+
+**Append-only enforcement**: Migration `2_enforce_append_only.up.sql` installs a `BEFORE UPDATE OR DELETE` trigger that raises an exception. Belt-and-suspenders with code-level convention.
 
 ---
 
 ### 7. `scoring` service
 
-Subscribes to `interaction-created` events. Runs the scorecard evaluator from the compliance package and writes results back.
+Subscribes to `interaction-created` events. Runs the scorecard evaluator from the compliance package and writes results back to `contact_attempts.scorecard_result` via a private PATCH endpoint on the contact service.
 
 ```go
 var _ = pubsub.NewSubscription(
     contact.InteractionCreated,
-    "score-interaction",
-    pubsub.SubscriptionConfig[*contact.InteractionEvent]{
-        Handler: HandleScoreInteraction,
+    "scoring-interaction-created",
+    pubsub.SubscriptionConfig[*contact.InteractionCreatedEvent]{
+        Handler: handleInteractionCreated,
     },
 )
 ```
+
+Handler logic:
+1. Skip if `SanitizedContent` is empty (blocked contacts have no transcript).
+2. Score using `defaultRubric()` — 3-item rubric: agent-id (required, weight 3), mini-miranda (required, weight 4), payment-option (optional, weight 3).
+3. Call `compliance.ScoreInteraction(ctx, &ScoreRequest{...})`.
+4. Marshal result and call `contact.UpdateScorecardResult(ctx, id, &UpdateScorecardReq{...})`.
+
+**Why async scoring exists alongside in-workflow scoring**: enables re-scoring if the rubric is updated later; decouples QA from the contact flow so scoring failures never block delivery.
 
 ---
 
@@ -491,13 +521,20 @@ var _ = pubsub.NewSubscription(
 var ContactAttempted = pubsub.NewTopic[*ContactAttemptedEvent]("contact-attempted", pubsub.TopicConfig{
     DeliveryGuarantee: pubsub.AtLeastOnce,
 })
-
 var InteractionCreated = pubsub.NewTopic[*InteractionCreatedEvent]("interaction-created", pubsub.TopicConfig{
     DeliveryGuarantee: pubsub.AtLeastOnce,
 })
 
 // consumer service
 var ConsentChanged = pubsub.NewTopic[*ConsentChangedEvent]("consent-changed", pubsub.TopicConfig{
+    DeliveryGuarantee: pubsub.AtLeastOnce,
+})
+var ConsumerLifecycle = pubsub.NewTopic[*ConsumerLifecycleEvent]("consumer-lifecycle", pubsub.TopicConfig{
+    DeliveryGuarantee: pubsub.AtLeastOnce,
+})
+
+// account service
+var AccountLifecycle = pubsub.NewTopic[*AccountLifecycleEvent]("account-lifecycle", pubsub.TopicConfig{
     DeliveryGuarantee: pubsub.AtLeastOnce,
 })
 
@@ -509,12 +546,14 @@ var PaymentUpdated = pubsub.NewTopic[*PaymentUpdatedEvent]("payment-updated", pu
 
 **Subscriber mapping:**
 
-| Topic                  | Subscribers                                                              |
-|------------------------|--------------------------------------------------------------------------|
-| `contact-attempted`    | `audit` (record attempt), `scoring` (if not blocked)                     |
-| `interaction-created`  | `audit`, `scoring`                                                       |
-| `consent-changed`      | `audit`, `contact` (cancel pending outbound for that consumer)           |
-| `payment-updated`      | `audit`                                                                  |
+| Topic | Subscribers |
+|---|---|
+| `contact-attempted` | `audit` |
+| `interaction-created` | `audit`, `scoring` |
+| `consent-changed` | `audit`, `contact` (cancel pending outbound for that consumer) |
+| `consumer-lifecycle` | `audit` |
+| `account-lifecycle` | `audit` |
+| `payment-updated` | `audit` |
 
 ---
 
@@ -530,17 +569,18 @@ compliance-platform/
 ├── CLAUDE.md                         # ✅ Project instructions for Claude Code
 │
 ├── consumer/
-│   ├── consumer.go                   # ✅ Service + API handlers (CreateConsumer, GetConsumer, UpdateConsent)
+│   ├── consumer.go                   # ✅ Service + API handlers; publishes consumer-lifecycle on create, consent-changed on grant/revoke
 │   ├── models.go                     # ✅ Consumer, CreateConsumerReq, UpdateConsentReq
-│   ├── events.go                     # ✅ ConsentChangedEvent + consent-changed topic
+│   ├── events.go                     # ✅ ConsentChangedEvent + ConsumerLifecycleEvent + both topics
 │   ├── consumer_test.go              # ✅ Table-driven tests
 │   ├── DESIGN.md                     # ✅ Design notes
 │   └── migrations/
 │       └── 1_create_tables.up.sql    # ✅
 │
 ├── account/
-│   ├── account.go                    # ✅ Service + API handlers (CRUD + status transitions)
+│   ├── account.go                    # ✅ Service + API handlers; publishes account-lifecycle on create and status update
 │   ├── models.go                     # ✅ Account, validStatuses map
+│   ├── events.go                     # ✅ AccountLifecycleEvent + account-lifecycle topic
 │   ├── account_test.go              # ✅ Table-driven tests including status transitions
 │   ├── DESIGN.md                     # ✅ Design notes
 │   └── migrations/
@@ -559,8 +599,8 @@ compliance-platform/
 │   └── DESIGN.md                     # ✅ Design notes
 │
 ├── contact/
-│   ├── contact.go                    # ✅ Service + API handlers + Temporal workflow trigger
-│   ├── models.go                     # ✅ ContactAttempt, request/response types
+│   ├── contact.go                    # ✅ Service + API handlers + Temporal trigger + PATCH /attempts/:id/scorecard
+│   ├── models.go                     # ✅ ContactAttempt, request/response types, UpdateScorecardReq
 │   ├── events.go                     # ✅ ContactAttempted + InteractionCreated topics
 │   ├── subscribers.go                # ✅ consent-changed subscriber (blocks pending contacts)
 │   ├── contact_test.go              # ✅ ListContacts, UpdateContactResult, validation, consent revocation
@@ -569,16 +609,19 @@ compliance-platform/
 │       └── 1_create_tables.up.sql    # ✅
 │
 ├── audit/
-│   ├── audit.go                      # ✅ RecordAudit (private) + GetAuditLog (public)
-│   ├── models.go                     # ✅ AuditEntry, RecordAuditReq
-│   ├── subscribers.go                # ✅ contact-attempted + interaction-created subscribers
-│   ├── audit_test.go                # ✅ RecordAudit + GetAuditLog tests
+│   ├── audit.go                      # ✅ RecordAudit (private) + GetAuditLog (public) + SearchAuditLog (filtered)
+│   ├── models.go                     # ✅ AuditEntry, RecordAuditReq, GetAuditLogParams
+│   ├── subscribers.go                # ✅ 6 subscribers + isDuplicate/buildMetadata idempotency helpers
+│   ├── audit_test.go                # ✅ RecordAudit, GetAuditLog, action filter, time range, idempotency, append-only, subscriber tests
+│   ├── integration_test.go          # ✅ Full lifecycle pipeline: consumer create → account create → status update → consent grant/revoke → filtered queries
 │   ├── DESIGN.md                     # ✅ Design notes
 │   └── migrations/
-│       └── 1_create_tables.up.sql    # ✅
+│       ├── 1_create_tables.up.sql    # ✅
+│       └── 2_enforce_append_only.up.sql  # ✅ BEFORE UPDATE OR DELETE trigger
 │
 ├── scoring/
-│   ├── subscribers.go                # ✅ interaction-created subscriber (stub — Phase 4 implements full scoring)
+│   ├── subscribers.go                # ✅ Full implementation: score via compliance.ScoreInteraction, update via contact.UpdateScorecardResult
+│   ├── scoring_test.go              # ✅ Full score, partial score, empty content, idempotency tests
 │   └── DESIGN.md                     # ✅ Design notes
 │
 ├── workflows/
@@ -590,12 +633,8 @@ compliance-platform/
 │   └── worker/
 │       └── main.go                   # ✅ Temporal worker binary
 │
-├── payment/                          # Phase 4
-│   ├── payment.go
-│   ├── models.go
-│   ├── events.go
-│   └── migrations/
-│       └── 1_create_tables.up.sql
+├── payment/                          # Phase 5 (CRUD + lifecycle not yet implemented)
+│   └── events.go                     # ✅ PaymentUpdatedEvent + payment-updated topic (stub for audit subscriber)
 │
 └── docs/
     ├── PRD.md                        # ✅ Product requirements
@@ -984,16 +1023,26 @@ This endpoint is what load balancers and uptime monitors call. It is distinct fr
 12. Consent revocation subscriber cancels pending contacts
 13. Workflow tests using `go.temporal.io/sdk/testsuite`
 
-### Phase 4: Payment + Scoring (next)
-14. `payment` service — CRUD + events
-15. Full scoring service implementation with per-client rubric lookup
-16. Temporal `PaymentPlanWorkflow` with signals + timers (stretch)
+### Phase 4: Audit Pipeline + Scoring Implementation ✅
+14. `payment/events.go` — `PaymentUpdated` topic stub (no CRUD yet)
+15. `consumer/events.go` — Added `ConsumerLifecycle` topic; `consumer.go` publishes on create and on both consent grant/revoke
+16. `account/events.go` — Added `AccountLifecycle` topic; `account.go` publishes on create and status update
+17. `contact/contact.go` — Added `PATCH /contact/attempts/:id/scorecard` private endpoint
+18. `audit/migrations/2_enforce_append_only.up.sql` — DB trigger enforcing append-only
+19. `audit/audit.go` — Added `SearchAuditLog` (filtered POST endpoint); refactored to shared `queryAuditLog` helper
+20. `audit/subscribers.go` — All 6 subscribers wired; idempotency via `isDuplicate`/`buildMetadata`/dedup keys
+21. `scoring/subscribers.go` — Full implementation: score via `compliance.ScoreInteraction`, write back via `contact.UpdateScorecardResult`
+22. Tests: audit filter/time-range/idempotency/append-only/subscriber tests; scoring full/partial/empty/idempotency tests; integration test
 
-### Phase 5: Polish
-17. ADR document
-18. Test coverage report
-19. OpenTelemetry integration for Temporal trace propagation
-20. README with architecture diagram
+### Phase 5: Payment Plans (next)
+23. `payment` service — CRUD + lifecycle (propose → accept → active → completed/defaulted)
+24. Temporal `PaymentPlanWorkflow` with signals + durable timers (stretch)
+
+### Phase 6: Polish
+25. ADR document
+26. Test coverage report
+27. OpenTelemetry integration for Temporal trace propagation
+28. README with architecture diagram
 
 ---
 

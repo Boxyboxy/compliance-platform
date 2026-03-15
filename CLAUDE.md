@@ -4,12 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-**Phase 3 complete.** All core services are implemented:
+**Phase 4 complete.** All core services are implemented:
 - **Phase 1:** `consumer/` and `account/` — CRUD APIs with migrations and table-driven tests.
 - **Phase 2:** `compliance/` — Rules engine (5 TCPA/FDCPA rules), PII sanitizer, scorecard evaluator with 30+ parametrized tests.
 - **Phase 3:** `contact/`, `workflows/`, `audit/`, `scoring/` — Temporal ContactWorkflow (7 activities), Pub/Sub event flow, append-only audit log, consent revocation propagation, scoring subscriber skeleton.
+- **Phase 4:** Full audit pipeline — lifecycle events on consumer (created, consent grant+revoke) and account (created, status_updated); audit subscribes to all 6 topics with idempotency; append-only DB trigger; filtered queries (action, since, until via `POST /audit/search`); scoring fully implemented; payment topic stub.
 
-Next: Phase 4 (payment plans + full scoring implementation). See `docs/TD.md` for technical details and `docs/PRD.md` for business context.
+Next: Phase 5 (payment plan CRUD + lifecycle + PaymentPlanWorkflow). See `docs/TD.md` for technical details and `docs/PRD.md` for business context.
 
 ## Tech Stack
 

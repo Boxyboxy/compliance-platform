@@ -3,6 +3,7 @@ package account
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -91,6 +92,22 @@ func (s *Service) CreateAccount(ctx context.Context, req *CreateAccountReq) (*Ac
 		"service", "account",
 		"id", a.ID,
 		"consumer_id", a.ConsumerID)
+
+	// Publish lifecycle event for audit trail.
+	if eventData, err := json.Marshal(a); err == nil {
+		if _, pubErr := AccountLifecycle.Publish(ctx, &AccountLifecycleEvent{
+			AccountID:  a.ID,
+			ConsumerID: a.ConsumerID,
+			Action:     "created",
+			NewValue:   json.RawMessage(eventData),
+		}); pubErr != nil {
+			rlog.Error("account-lifecycle event publish failed",
+				"service", "account",
+				"account_id", a.ID,
+				"err", pubErr)
+		}
+	}
+
 	return a, nil
 }
 
@@ -196,6 +213,23 @@ func (s *Service) UpdateAccountStatus(ctx context.Context, id int64, req *Update
 		"id", a.ID,
 		"from", prevStatus,
 		"to", a.Status)
+
+	// Publish lifecycle event for audit trail.
+	oldVal, _ := json.Marshal(map[string]string{"status": prevStatus})
+	newVal, _ := json.Marshal(map[string]string{"status": string(a.Status)})
+	if _, pubErr := AccountLifecycle.Publish(ctx, &AccountLifecycleEvent{
+		AccountID:  a.ID,
+		ConsumerID: a.ConsumerID,
+		Action:     "status_updated",
+		OldValue:   json.RawMessage(oldVal),
+		NewValue:   json.RawMessage(newVal),
+	}); pubErr != nil {
+		rlog.Error("account-lifecycle event publish failed",
+			"service", "account",
+			"account_id", a.ID,
+			"err", pubErr)
+	}
+
 	return &a, nil
 }
 

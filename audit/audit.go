@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"encore.dev/beta/errs"
 	"encore.dev/rlog"
@@ -86,17 +87,61 @@ func recordAuditEntry(ctx context.Context, req *RecordAuditReq) (*AuditEntry, er
 //
 //encore:api public method=GET path=/audit/:entityType/:entityId
 func (s *Service) GetAuditLog(ctx context.Context, entityType string, entityId int64) (*AuditLogList, error) {
+	return queryAuditLog(ctx, &GetAuditLogParams{
+		EntityType: entityType,
+		EntityId:   entityId,
+	})
+}
+
+// SearchAuditLog retrieves filtered audit entries.
+// Supports optional filters: action, since (RFC3339), until (RFC3339).
+//
+//encore:api public method=POST path=/audit/search
+func (s *Service) SearchAuditLog(ctx context.Context, params *GetAuditLogParams) (*AuditLogList, error) {
+	return queryAuditLog(ctx, params)
+}
+
+// queryAuditLog is the shared query implementation for GetAuditLog and SearchAuditLog.
+func queryAuditLog(ctx context.Context, params *GetAuditLogParams) (*AuditLogList, error) {
 	rlog.Debug("audit log lookup",
 		"service", "audit",
-		"entity_type", entityType,
-		"entity_id", entityId)
+		"entity_type", params.EntityType,
+		"entity_id", params.EntityId)
 
-	rows, err := db.Query(ctx, `
+	query := `
 		SELECT id, entity_type, entity_id, action, actor, old_value, new_value, metadata, created_at
 		FROM audit_log
-		WHERE entity_type = $1 AND entity_id = $2
-		ORDER BY created_at DESC
-	`, entityType, entityId)
+		WHERE entity_type = $1 AND entity_id = $2`
+	args := []interface{}{params.EntityType, params.EntityId}
+	argIdx := 3
+
+	if params.Action != "" {
+		query += fmt.Sprintf(" AND action = $%d", argIdx)
+		args = append(args, params.Action)
+		argIdx++
+	}
+	if params.Since != "" {
+		sinceTime, err := time.Parse(time.RFC3339, params.Since)
+		if err != nil {
+			return nil, &errs.Error{Code: errs.InvalidArgument, Message: "since must be RFC3339 format"}
+		}
+		query += fmt.Sprintf(" AND created_at >= $%d", argIdx)
+		args = append(args, sinceTime)
+		argIdx++
+	}
+	if params.Until != "" {
+		untilTime, err := time.Parse(time.RFC3339, params.Until)
+		if err != nil {
+			return nil, &errs.Error{Code: errs.InvalidArgument, Message: "until must be RFC3339 format"}
+		}
+		query += fmt.Sprintf(" AND created_at <= $%d", argIdx)
+		args = append(args, untilTime)
+		argIdx++
+	}
+
+	query += " ORDER BY created_at DESC"
+
+	rows, err := db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying audit log: %w", err)
 	}

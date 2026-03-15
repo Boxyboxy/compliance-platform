@@ -80,6 +80,22 @@ The compliance service's `SanitizePII` function redacts SSNs, credit cards, and 
 
 The FDCPA 7-in-7 frequency cap (7 contact attempts per 7-day rolling window) applies **per consumer**, not per account. A consumer with three delinquent accounts still has a single 7-contact budget shared across all accounts. The compliance service queries `contact_attempts` by `consumer_id` (not `account_id`) when evaluating the frequency cap. This service does not enforce the cap — it just provides the account context; the compliance service enforces it.
 
+## Lifecycle Events
+
+`CreateAccount` and `UpdateAccountStatus` publish to the `account-lifecycle` Pub/Sub topic after each successful DB write. The audit service subscribes and records entries for the entity.
+
+**`CreateAccount`** publishes `{action: "created", new_value: <full account JSON>}`. The full record is embedded so the audit entry captures the initial state without a second DB read.
+
+**`UpdateAccountStatus`** publishes `{action: "status_updated", old_value: {"status": "<prev>"}, new_value: {"status": "<new>"}}`. The previous status is captured atomically in the same SQL `CTE` as the update, so the old/new pair in the event is guaranteed to match the actual transition.
+
+Both publishes are best-effort: a publish failure is logged as an error but does not cause the API to return an error. The DB record is the source of truth; the audit entry is supplementary. Callers are not burdened with retrying a lifecycle event publish.
+
+**Dedup keys** in the audit subscriber:
+- Create: `account-lifecycle:<AccountID>:created`
+- Status update: `account-lifecycle:<AccountID>:status_updated`
+
+Note: if an account's status is updated twice in rapid succession, both events share the same dedup key format. In practice this is not a problem because the second status update has a different account state (a new `status_updated` event with different content) — but the dedup key does not encode the new value. If strict per-transition dedup is needed, include the new status in the key. For now the risk of a missed update due to dedup collision is accepted as a minor edge case in the audit log, not a compliance gap.
+
 ## Error Codes
 
 | Condition | HTTP status | `errs.Code` |

@@ -27,7 +27,9 @@ Optional. Stored as NULL when not provided so that downstream code can distingui
 
 ## Consent Event Design
 
-When consent is revoked, `UpdateConsent` publishes a `consent-changed` event to the `consent-changed` Pub/Sub topic **after** the DB write succeeds. This is intentionally asynchronous — the API returns the updated consumer record immediately; the contact service cancels pending workflows as a subscriber.
+`UpdateConsent` publishes a `consent-changed` event to the `consent-changed` Pub/Sub topic **after** the DB write succeeds, for **both grant and revoke**. This is intentionally asynchronous — the API returns the updated consumer record immediately; the contact service cancels pending workflows (revoke only) and the audit service records the change as a subscriber.
+
+**Why publish on grant too?** The audit trail needs a complete history of all consent transitions — not just revocations. A compliance officer reviewing an account should see the full sequence: "granted → revoked (2026-01-10) → granted (2026-02-14)" rather than having grant events silently disappear from the audit log.
 
 Why not a synchronous call from consumer → contact service?
 
@@ -36,6 +38,14 @@ Why not a synchronous call from consumer → contact service?
 - Encore Pub/Sub provides at-least-once delivery, so a transient failure in the contact service will be retried without the consumer service needing to retry.
 
 The tradeoff: there is a small window (the Pub/Sub delivery latency, typically < 1 second) during which a pending workflow could still attempt delivery after consent is revoked. This is mitigated by the compliance pre-check inside the Temporal workflow, which re-reads consent status from the DB at execution time.
+
+## Consumer Lifecycle Events
+
+`CreateConsumer` publishes a `consumer-lifecycle` event with `Action: "created"` and the full consumer record as `NewValue`. The audit service subscribes and records a `created` entry for the entity.
+
+This event is best-effort: a publish failure is logged as an error but does not cause the API to return an error (the consumer was already created in the DB). The consumer record itself is the source of truth; the audit entry is supplementary.
+
+**Dedup consideration**: the audit subscriber uses `consumer-lifecycle:<id>:created` as its dedup key. If the consumer is created and the event is delivered twice (at-least-once), the audit service will silently skip the duplicate.
 
 ## PII Considerations
 
@@ -48,7 +58,7 @@ The tradeoff: there is a small window (the Pub/Sub delivery latency, typically <
 Consumer financial data (account numbers, balances, SSNs) lives in the `account` service or is sanitized by the compliance PII sanitizer before storage. The consumer service intentionally holds only contact metadata, not financial account details.
 
 ### Audit trail
-All consent changes produce audit log entries via the `audit` service subscribing to the `consent-changed` Pub/Sub topic. The audit subscriber records the full event payload (consumer ID, new consent status, timestamp) with a `correlation_id` in metadata for cross-service tracing. Compliance officers can query `GET /audit/consumer/:id` to retrieve the complete consent change history.
+All consent changes (grant and revoke) produce audit log entries via the `audit` service subscribing to `consent-changed`. Consumer creation produces an audit entry via `consumer-lifecycle`. The action field distinguishes the type: `consent_revoked`, `consent_granted`, or `created`. Compliance officers can query `GET /audit/consumer/:id` to retrieve the complete history, or use `POST /audit/search` with `action=consent_revoked` to retrieve only revocations.
 
 ## File Organization
 

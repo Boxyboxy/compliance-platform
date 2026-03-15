@@ -33,3 +33,13 @@ type RecordAuditReq struct {
 type AuditLogList struct {
 	Entries []*AuditEntry `json:"entries"`
 }
+
+// GetAuditLogParams holds filter parameters for audit log queries.
+// Used by POST /audit/search (body) and internally by GET /audit/:entityType/:entityId.
+type GetAuditLogParams struct {
+	EntityType string `json:"entity_type"`
+	EntityId   int64  `json:"entity_id"`
+	Action     string `json:"action,omitempty"`
+	Since      string `json:"since,omitempty"` // RFC3339
+	Until      string `json:"until,omitempty"` // RFC3339
+}

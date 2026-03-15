@@ -63,6 +63,11 @@ type PublishContactAttemptedReq struct {
 	CorrelationID    string         `json:"correlation_id,omitempty"`
 }
 
+// UpdateScorecardReq is the request body for PATCH /contact/attempts/:id/scorecard.
+type UpdateScorecardReq struct {
+	ScorecardResult json.RawMessage `json:"scorecard_result"`
+}
+
 // PublishInteractionCreatedReq is the request body for internal publish endpoint.
 type PublishInteractionCreatedReq struct {
 	ContactAttemptID int64           `json:"contact_attempt_id"`
