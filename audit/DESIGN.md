@@ -70,7 +70,7 @@ All 6 subscribers are wired in `subscribers.go`:
 | `consent-changed` | `audit-consent-changed` | `consent_revoked` or `consent_granted` | `consumer` |
 | `consumer-lifecycle` | `audit-consumer-lifecycle` | event.Action (e.g. `created`) | `consumer` |
 | `account-lifecycle` | `audit-account-lifecycle` | event.Action (e.g. `created`, `status_updated`) | `account` |
-| `payment-updated` | `audit-payment-updated` | event.EventType | `payment_plan` |
+| `payment-updated` | `audit-payment-updated` | event.EventType (e.g. `proposed`, `accepted`, `active`, `payment_received`, `completed`, `defaulted`) | `payment_plan` |
 
 The consent-changed subscriber derives the action from `event.ConsentStatus`: `"revoked"` → `"consent_revoked"`, anything else → `"consent_granted"`.
 
@@ -99,6 +99,8 @@ Dedup key formats:
 - `payment-updated:<PlanID>:<EventType>`
 
 Duplicates are logged at Debug level and return nil (not an error — the handler completed successfully).
+
+**Known limitation**: `payment_received` events for the same plan share the same dedup key (`payment-updated:<PlanID>:payment_received`). Under at-least-once delivery, a redelivered `payment_received` message is correctly deduplicated. However, this also means that if a plan has multiple installment payments, only the first `payment_received` audit entry is recorded — subsequent payments are silently skipped as "duplicates". For a complete payment history, query `GET /payment-plans/:id` and the `payment_events` table directly rather than the audit log. Fixing this (e.g., including `occurred_at` in the dedup key) is tracked as a Phase 6 improvement.
 
 ## Error Codes
 

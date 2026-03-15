@@ -2,7 +2,7 @@
 
 **Product**: Krew Backend Platform (Codename: "The Rails")
 **Last Updated**: March 15, 2026
-**Status**: Phase 4 Complete — Audit pipeline complete, scoring implemented, lifecycle events on all services
+**Status**: Phase 5 Complete — Payment plan CRUD, lifecycle state machine, and PaymentPlanWorkflow implemented
 **Tech Spec**: See `TD.md`
 
 ---
@@ -195,11 +195,13 @@ Scorecard evaluator:
 **User story**: As Daniel, when a consumer agrees to a payment arrangement, I call `POST /payment-plans` to propose a plan. When the consumer confirms, I call `PATCH /payment-plans/:id/accept`. The platform tracks installments and detects defaults.
 
 **Acceptance criteria**:
-- Propose a plan with total amount, number of installments, and frequency
-- Accept a plan (transitions from proposed → accepted → active)
-- Record individual payments against a plan
-- Detect completion (all installments paid) and default (3+ missed payments) — this is the stretch Temporal workflow
-- All state transitions produce audit entries and publish `payment-updated` events
+- Propose a plan with total amount, number of installments, and frequency ✅
+- Accept a plan (transitions from proposed → accepted) ✅
+- Record individual payments against a plan (first payment transitions accepted → active; final payment triggers completed) ✅
+- Detect completion (sum of payments ≥ total_amount) and default (3+ missed payments via Temporal workflow) ✅
+- All state transitions produce audit entries and publish `payment-updated` events ✅
+- Private `MarkDefaulted` / `MarkCompleted` endpoints for Temporal workflow callbacks ✅
+- `PaymentPlanWorkflow`: signal-driven state machine with 72h acceptance timeout, installment tracking with configurable frequency (weekly/biweekly/monthly), 3-day grace periods, and 3-miss default threshold ✅
 
 ### F6: Audit Trail
 
@@ -291,11 +293,11 @@ Temporal `ContactWorkflow` with 7 activities (compliance check → sanitize → 
 ### Phase 4: Audit Pipeline + Scoring Implementation ✅
 Full event-driven audit pipeline: consumer and account services now publish lifecycle events (`consumer-lifecycle`, `account-lifecycle`) on every state change. Consent-changed event now fires on both grant and revoke (not only revoke). Audit service subscribes to all 6 Pub/Sub topics with per-event idempotency via dedup keys. Append-only enforcement added at the database level via a trigger. Filtered audit queries (by action, time range) added via `POST /audit/search`. Scoring service fully implemented: subscribes to `interaction-created`, calls `compliance.ScoreInteraction` with default rubric, and writes result back to `contact_attempts.scorecard_result` via private PATCH endpoint. Payment topic stub (`payment-updated`) defined. **Scoring is idempotent (overwrite is safe-no-op with same rubric) and decoupled from the contact workflow.**
 
-### Phase 5: Payment Plans + Polish (next)
-Payment plan CRUD and lifecycle (propose → accept → active → completed/defaulted). `PaymentPlanWorkflow` with Temporal signals and durable timers (stretch). ADR document, test coverage reports, README, architecture diagrams, OpenTelemetry integration for Temporal trace propagation.
+### Phase 5: Payment Plans ✅
+Payment plan CRUD and lifecycle (propose → accept → active → completed/defaulted). `PaymentPlanWorkflow` with Temporal signals and durable timers. Six API endpoints (4 public, 2 private). Table-driven tests covering the full lifecycle. `PaymentUpdatedEvent` now includes `OccurredAt` timestamp. Workflow activities (`MarkPlanDefaulted`, `MarkPlanCompleted`) call back to Encore via HTTP PATCH. Worker registers both `ContactWorkflow` and `PaymentPlanWorkflow` on the same task queue. **All state transitions publish `payment-updated` events; audit subscriber already handles them with idempotency from Phase 4.**
 
-### Phase 6: Polish
-ADR, test coverage reports, README, architecture diagrams, OpenTelemetry integration for Temporal trace propagation. **This shows engineering maturity.**
+### Phase 6: Polish (next)
+ADR document, test coverage reports, README, architecture diagrams, OpenTelemetry integration for Temporal trace propagation. **This shows engineering maturity.**
 
 ---
 

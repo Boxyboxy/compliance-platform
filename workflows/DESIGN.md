@@ -13,7 +13,7 @@ The contact workflow has several properties that make Temporal the right tool:
 1. **Crash recovery.** If the worker restarts mid-workflow, Temporal replays the workflow history up to the last completed activity and resumes from there. No orphaned `pending` rows, no lost contacts.
 2. **Automatic retry with backoff.** Each activity retries up to 3 times with 1-second initial backoff. HTTP calls to Encore APIs fail transiently; retries handle this without custom retry logic in the activity code.
 3. **Visibility.** The Temporal UI shows every workflow execution — which step it's on, which activities failed, and the full event history. This replaces what would otherwise be a bespoke "where is this contact stuck?" dashboard.
-4. **Future workflows.** `PaymentPlanWorkflow` (Phase 4) requires durable timers (wait for acceptance signal, schedule installment reminders). That is only practical with Temporal.
+4. **Long-running workflows.** `PaymentPlanWorkflow` uses durable timers (wait for acceptance signal, schedule installment reminders over weeks/months). That is only practical with Temporal.
 
 ## The Worker Is HTTP-Only
 
@@ -46,7 +46,7 @@ ContactWorkflow(input ContactWorkflowInput)
 ├─ Step 4: ScoreInteraction
 │   POST /compliance/score
 │   uses hardcoded default rubric (3 items: agent-id, mini-miranda, payment-option)
-│   Phase 4: scoring service will re-score async with per-client rubric
+│   scoring service also re-scores async via interaction-created subscriber (Phase 4)
 │
 ├─ Step 5: RecordContactResult
 │   POST /contact/attempts/:id/result (private)
@@ -95,15 +95,17 @@ The Temporal Go SDK's test suite serializes and deserializes activity arguments 
 
 This is a test-infrastructure constraint, not a domain modeling choice.
 
-## `Activities` Struct and the `post` Helper
+## `Activities` Struct and the `doRequest` Helper
 
-All seven activities delegate to a single private `post` method that:
+All activities delegate to a shared `doRequest` method that:
 
-1. Marshals the payload to JSON.
-2. Creates an HTTP POST with `Content-Type: application/json`.
+1. Marshals the payload to JSON (if non-nil).
+2. Creates an HTTP request with the specified method and `Content-Type: application/json`.
 3. Executes the request with the activity's context (timeout + cancellation propagate correctly).
 4. Returns a structured error on HTTP 4xx/5xx.
 5. Decodes the response body into the provided result pointer (nil = discard body).
+
+The convenience `post` method wraps `doRequest` with `http.MethodPost` for backward compatibility with existing ContactWorkflow activities. Payment activities call `doRequest` directly with `http.MethodPatch`.
 
 This keeps each activity method small — they express _what_ to call and _what type to expect back_, not _how_ to make an HTTP call.
 
@@ -116,14 +118,15 @@ TEMPORAL_HOST_PORT=localhost:7233  (default)
 ENCORE_BASE_URL=http://localhost:4000  (default)
 ```
 
-The worker registers both the workflow function and the activities struct:
+The worker registers both workflow functions and the activities struct:
 
 ```go
 w.RegisterWorkflow(workflows.ContactWorkflow)
+w.RegisterWorkflow(workflows.PaymentPlanWorkflow)
 w.RegisterActivity(activities)  // registers all methods on *Activities
 ```
 
-Registering the struct registers all exported methods. Adding a new activity method automatically makes it available to the worker without a separate `RegisterActivity` call.
+Registering the struct registers all exported methods. Adding a new activity method (e.g., `MarkPlanDefaulted`, `MarkPlanCompleted`) automatically makes it available to the worker without a separate `RegisterActivity` call. Both workflows run on the same `contact-queue` task queue.
 
 `worker.InterruptCh()` returns a channel that closes on `SIGINT`/`SIGTERM`. The worker drains in-flight activities before exiting — no activity is abandoned mid-execution on a graceful shutdown.
 
@@ -142,6 +145,50 @@ Each test registers the `Activities` struct on the env (`env.RegisterActivity(&A
 | `TestContactWorkflow_DeliveryFailure` | All steps run; result is `failed`, `Allowed: true` (compliance passed, delivery failed) |
 | `TestContactWorkflow_ComplianceActivityError` | Activity error after 3 retries → workflow errors |
 | `TestContactWorkflow_ScorecardIncludedInResult` | Sanitized content propagates into workflow result |
+
+## `PaymentPlanWorkflow` — Signal-Driven State Machine
+
+```
+PaymentPlanWorkflow(input PaymentPlanInput)
+│
+├─ Step 1: Wait for "accept" signal (72h timeout via Selector)
+│   └─ timeout → MarkPlanDefaulted activity → return
+│
+├─ Step 2: Loop NumInstallments times:
+│   ├─ Sleep for frequency interval (weekly=7d, biweekly=14d, monthly=30d)
+│   ├─ Wait for "payment_received" signal (3-day grace via Selector)
+│   │   ├─ received → continue
+│   │   └─ grace expired → missedCount++
+│   │       └─ missedCount >= 3 → MarkPlanDefaulted → return
+│   └─ next installment
+│
+└─ All installments complete → MarkPlanCompleted → return
+```
+
+### Key Differences from ContactWorkflow
+
+1. **Long-running.** ContactWorkflow completes in seconds. PaymentPlanWorkflow can run for months (e.g., 12 monthly installments = ~360 days). Temporal handles this natively — the workflow history grows with each timer and signal event.
+
+2. **Signal-driven.** The workflow uses `workflow.GetSignalChannel` to receive external signals ("accept" and "payment_received"). The Encore API or an external process sends these signals via the Temporal client when the consumer accepts a plan or makes a payment.
+
+3. **Selector pattern for timeout-or-signal.** Both the acceptance wait and the installment grace period use `workflow.NewSelector` with a timer future and a signal channel. This is Temporal's idiomatic pattern for "wait for X or timeout after Y."
+
+4. **No HTTP calls during wait.** The workflow sleeps between installments using `workflow.Sleep`. Temporal durable timers do not consume worker resources while sleeping — the worker can process other workflows.
+
+### Activities
+
+Two activities call Encore's private PATCH endpoints:
+
+| Activity | Endpoint | Purpose |
+|---|---|---|
+| `MarkPlanDefaulted` | `PATCH /payment-plans/:id/default` | Sets status to `defaulted`, records event, publishes to Pub/Sub |
+| `MarkPlanCompleted` | `PATCH /payment-plans/:id/complete` | Sets status to `completed`, records event, publishes to Pub/Sub |
+
+Both use the `doRequest` helper (refactored from `post`) which supports arbitrary HTTP methods.
+
+### Worker Registration
+
+Both `ContactWorkflow` and `PaymentPlanWorkflow` are registered on the same `contact-queue` worker. Temporal dispatches by workflow type name, so both workflows run correctly on the same task queue. This simplifies development — a separate `payment-queue` can be introduced later if the workflows need independent scaling.
 
 ## Correlation ID
 

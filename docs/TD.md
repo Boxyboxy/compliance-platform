@@ -56,27 +56,31 @@ A Go backend platform that powers AI credit-servicing agents (like Krew's "Danie
 │  │                    Encore Pub/Sub Topics                    │    │
 │  │                                                             │    │
 │  │   contact-attempted    │   interaction-created              │    │
-│  │   consent-changed      │   payment-updated                  │    │
+│  │   consent-changed      │   consumer-lifecycle               │    │
+│  │   account-lifecycle    │   payment-updated                  │    │
 │  └─────────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────────┘
                                │
                                │  Temporal SDK
                                ▼
-               ┌────────────────────────────────┐
-               │         Temporal Server        │
-               │                                │
-               │  ContactWorkflow               │
-               │    ├─ PreCheck                 │
-               │    ├─ SendMessage              │
-               │    ├─ RecordResult             │
-               │    ├─ PostCheck                │
-               │    └─ ScoreInteract            │
-               │                                │
-               │  PaymentPlanWorkflow           │
-               │    ├─ ProposePlan              │
-               │    ├─ AwaitAccept              │
-               │    └─ ActivatePlan             │
-               └────────────────────────────────┘
+               ┌────────────────────────────────────┐
+               │          Temporal Server           │
+               │                                    │
+               │  ContactWorkflow                   │
+               │    ├─ CheckCompliance              │
+               │    ├─ SanitizePII                  │
+               │    ├─ SimulateDelivery             │
+               │    ├─ ScoreInteraction             │
+               │    ├─ RecordContactResult          │
+               │    ├─ PublishContactAttempted      │
+               │    └─ PublishInteractionCreated    │
+               │                                    │
+               │  PaymentPlanWorkflow               │
+               │    ├─ Wait "accept" signal (72h)   │
+               │    ├─ Track installments + grace   │
+               │    ├─ MarkPlanDefaulted            │
+               │    └─ MarkPlanCompleted            │
+               └────────────────────────────────────┘
 ```
 
 ---
@@ -292,55 +296,57 @@ func (s *Service) ListContacts(ctx context.Context, consumerId int64) (*ContactL
 **Temporal Workflow: `ContactWorkflow`**
 
 ```
- ContactWorkflow
+ ContactWorkflow(input ContactWorkflowInput)
  │
- ├─ Step 1: CheckCompliance (Activity)
- │           └─ blocked? ──► record blocked attempt, return early
+ ├─ Step 1: CheckCompliance
+ │           └─ blocked? ──► RecordContactResult(blocked) + PublishContactAttempted → return early
  │
- ├─ Step 2: GenerateMessageStub (Activity)
- │           └─ STUB — returns a hardcoded template string
- │              (this is where Daniel plugs in)
+ ├─ Step 2: SanitizePII
+ │           └─ redact SSN/CC/phone from input.MessageContent before any storage
  │
- ├─ Step 3: SanitizePII (Activity)
- │           └─ redact PII from message for safe logging
+ ├─ Step 3: SimulateDelivery
+ │           └─ deterministic stub: attemptID % 10 == 0 → failed, else → delivered
  │
- ├─ Step 4: SimulateDelivery (Activity)
- │           └─ STUB — simulate delivery via channel
+ ├─ Step 4: ScoreInteraction
+ │           └─ keyword-based default rubric (agent-id, mini-miranda, payment-option)
  │
- ├─ Step 5: RecordContactAttempt (Activity)
- │           └─ write sanitized message + results to DB
+ ├─ Step 5: RecordContactResult
+ │           └─ write sanitized content + compliance + scorecard blobs to DB
  │
- ├─ Step 6: ScoreInteraction (Activity)
- │           └─ evaluate message against rubric
+ ├─ Step 6: PublishContactAttempted
+ │           └─ bridges worker → Encore Pub/Sub (contact-attempted topic)
  │
- └─ Step 7: PublishInteractionEvent (Activity)
-             └─ emit interaction-created to Pub/Sub
+ └─ Step 7: PublishInteractionCreated
+             └─ carries sanitized content + scorecard result (interaction-created topic)
 ```
+
+**Note on message generation**: The AI agent (Daniel) assembles `MessageContent` before calling `POST /contact/initiate`. The platform receives it as part of `ContactWorkflowInput` and sanitizes it in Step 2. There is no `GenerateMessageStub` activity — the generation stub lives in the contact service before the workflow starts.
 
 ```go
 func ContactWorkflow(ctx workflow.Context, input ContactWorkflowInput) (ContactWorkflowResult, error) {
-    // Step 1: Pre-contact compliance check (Activity)
-    checkResult, err := workflow.ExecuteActivity(ctx, activities.CheckCompliance, input)
-    if checkResult is blocked → record blocked attempt, return early
+    // Step 1: Pre-contact compliance check
+    checkResult, err := workflow.ExecuteActivity(ctx, activities.CheckCompliance, checkInput).Get(ctx, &checkResult)
+    if !checkResult.Allowed {
+        // Record blocked result + publish contact-attempted, then return early
+    }
 
-    // Step 2: Generate message (STUB — returns a hardcoded template string)
-    // This is where Daniel would plug in. For now, just use a template.
-    message := activities.GenerateMessageStub(input)
+    // Step 2: Sanitize PII from message content
+    sanitizeResult, err := workflow.ExecuteActivity(ctx, activities.SanitizePII, ...).Get(ctx, &sanitizeResult)
 
-    // Step 3: Post-check — sanitize PII from message for logging
-    sanitized := activities.SanitizePII(message)
+    // Step 3: Simulate delivery (deterministic: attemptID % 10 == 0 → failed)
+    deliveryResult, err := workflow.ExecuteActivity(ctx, activities.SimulateDelivery, ...).Get(ctx, &deliveryResult)
 
-    // Step 4: "Send" message (STUB — simulate delivery via channel)
-    deliveryResult := activities.SimulateDelivery(input.Channel, message)
+    // Step 4: Score interaction against default rubric
+    scoreResult, err := workflow.ExecuteActivity(ctx, activities.ScoreInteraction, ...).Get(ctx, &scoreResult)
 
-    // Step 5: Record interaction in DB
-    activities.RecordContactAttempt(sanitized, checkResult, deliveryResult)
+    // Step 5: Record contact result (sanitized content + compliance + scorecard blobs)
+    workflow.ExecuteActivity(ctx, activities.RecordContactResult, ...)
 
-    // Step 6: Score the interaction
-    scoreResult := activities.ScoreInteraction(sanitized, input.RubricID)
+    // Step 6: Publish contact-attempted event
+    workflow.ExecuteActivity(ctx, activities.PublishContactAttempted, ...)
 
     // Step 7: Publish interaction-created event
-    activities.PublishInteractionEvent(...)
+    workflow.ExecuteActivity(ctx, activities.PublishInteractionCreated, ...)
 
     return result, nil
 }
@@ -401,35 +407,50 @@ func (s *Service) RecordPayment(ctx context.Context, id int64, req *RecordPaymen
 func (s *Service) GetPlan(ctx context.Context, id int64) (*PaymentPlan, error)
 ```
 
-**Temporal Workflow: `PaymentPlanWorkflow`** (stretch goal)
+**Private endpoints (for Temporal workflow callbacks):**
+
+```go
+//encore:api private method=PATCH path=/payment-plans/:id/default
+func (s *Service) MarkDefaulted(ctx context.Context, id int64) (*PaymentPlan, error)
+
+//encore:api private method=PATCH path=/payment-plans/:id/complete
+func (s *Service) MarkCompleted(ctx context.Context, id int64) (*PaymentPlan, error)
+```
+
+**Temporal Workflow: `PaymentPlanWorkflow`**
 
 ```
- PaymentPlanWorkflow
+ PaymentPlanWorkflow(input PaymentPlanInput)
  │
- ├─ ProposePlan
- │   └─ wait for acceptance signal (with timeout)
+ ├─ Step 1: Wait for "accept" signal (72h timeout)
+ │   └─ timeout? ──► MarkPlanDefaulted activity → return
  │
- ├─ on accept ──► schedule installment reminders (Temporal timers)
+ ├─ Step 2: Loop NumInstallments times:
+ │   ├─ Sleep for interval (weekly=7d, biweekly=14d, monthly=30d)
+ │   ├─ Wait for "payment_received" signal (3-day grace)
+ │   │   ├─ received? ──► continue to next installment
+ │   │   └─ grace expired? ──► missedCount++
+ │   │       └─ missedCount >= 3? ──► MarkPlanDefaulted activity → return
+ │   └─ next installment
  │
- └─ per installment due date:
-     ├─ payment received? ──► continue
-     ├─ missed?           ──► publish event, increment missed count
-     └─ 3 missed?         ──► mark defaulted
-         all paid?         ──► mark completed
+ └─ All installments tracked ──► MarkPlanCompleted activity → return
 ```
 
 ```go
 func PaymentPlanWorkflow(ctx workflow.Context, input PaymentPlanInput) error {
-    // Propose plan → wait for acceptance signal (with timeout)
-    // On accept → schedule installment reminders using Temporal timers
-    // On each due date → check if payment received
-    // If missed → publish event, increment missed count
-    // If 3 missed → mark defaulted
-    // If all paid → mark completed
+    // Wait for "accept" signal with 72-hour timeout
+    // On timeout → MarkPlanDefaulted → return
+    // On accept → loop NumInstallments times:
+    //   Sleep for frequency interval
+    //   Wait for "payment_received" signal with 3-day grace
+    //   If grace expires → missedCount++; if >= 3 → MarkPlanDefaulted → return
+    // All installments tracked → MarkPlanCompleted → return
 }
 ```
 
-This demonstrates Temporal's long-running workflow + signal capabilities.
+Activities (`MarkPlanDefaulted`, `MarkPlanCompleted`) call Encore's private PATCH endpoints via HTTP, following the same pattern as `ContactWorkflow` activities. The `Activities` struct's `doRequest` helper (refactored from the original `post` method) supports both POST and PATCH methods.
+
+This demonstrates Temporal's long-running workflow + signal capabilities, durable timers, and the selector pattern for timeout-or-signal branching.
 
 ---
 
@@ -628,13 +649,22 @@ compliance-platform/
 │   ├── contact_workflow.go           # ✅ ContactWorkflow (7 steps)
 │   ├── activities.go                 # ✅ HTTP-based activities (no Encore imports)
 │   ├── models.go                     # ✅ Workflow input/output types, activity I/O mirrors
+│   ├── payment_models.go             # ✅ PaymentPlanInput, MarkPlanInput (no Encore imports)
+│   ├── payment_workflow.go           # ✅ PaymentPlanWorkflow (signal-driven state machine)
+│   ├── payment_activities.go         # ✅ MarkPlanDefaulted, MarkPlanCompleted (HTTP PATCH)
 │   ├── contact_workflow_test.go      # ✅ 5 test cases using Temporal test suite
 │   ├── DESIGN.md                     # ✅ Design notes
 │   └── worker/
-│       └── main.go                   # ✅ Temporal worker binary
+│       └── main.go                   # ✅ Temporal worker binary (registers both ContactWorkflow and PaymentPlanWorkflow)
 │
-├── payment/                          # Phase 5 (CRUD + lifecycle not yet implemented)
-│   └── events.go                     # ✅ PaymentUpdatedEvent + payment-updated topic (stub for audit subscriber)
+├── payment/
+│   ├── payment.go                    # ✅ Service + 4 public handlers (ProposePlan, AcceptPlan, RecordPayment, GetPlan) + 2 private (MarkDefaulted, MarkCompleted)
+│   ├── models.go                     # ✅ PaymentPlan, PaymentEvent, ProposePlanReq, RecordPaymentReq
+│   ├── events.go                     # ✅ PaymentUpdatedEvent (with OccurredAt) + payment-updated topic
+│   ├── payment_test.go              # ✅ Table-driven tests: propose, accept, record payment lifecycle, get plan
+│   ├── DESIGN.md                     # ✅ Design notes
+│   └── migrations/
+│       └── 1_create_tables.up.sql    # ✅ plan_status enum, payment_plans, payment_events tables
 │
 └── docs/
     ├── PRD.md                        # ✅ Product requirements
@@ -1034,15 +1064,24 @@ This endpoint is what load balancers and uptime monitors call. It is distinct fr
 21. `scoring/subscribers.go` — Full implementation: score via `compliance.ScoreInteraction`, write back via `contact.UpdateScorecardResult`
 22. Tests: audit filter/time-range/idempotency/append-only/subscriber tests; scoring full/partial/empty/idempotency tests; integration test
 
-### Phase 5: Payment Plans (next)
-23. `payment` service — CRUD + lifecycle (propose → accept → active → completed/defaulted)
-24. Temporal `PaymentPlanWorkflow` with signals + durable timers (stretch)
+### Phase 5: Payment Plans ✅
+23. `payment/migrations/1_create_tables.up.sql` — `plan_status` enum, `payment_plans`, `payment_events` tables with indexes
+24. `payment/models.go` — `PaymentPlan`, `PaymentEvent`, request/response structs
+25. `payment/payment.go` — Service + 4 public handlers (`ProposePlan`, `AcceptPlan`, `RecordPayment`, `GetPlan`) + 2 private (`MarkDefaulted`, `MarkCompleted`) + scan helpers
+26. `payment/events.go` — Added `OccurredAt time.Time` to `PaymentUpdatedEvent`; moved `//encore:service` to `payment.go`
+27. `payment/payment_test.go` — 4 table-driven test functions (~13 cases) covering full lifecycle
+28. `workflows/payment_models.go` — `PaymentPlanInput`, `MarkPlanInput` (pure Go, no Encore imports)
+29. `workflows/payment_workflow.go` — Signal-driven `PaymentPlanWorkflow` (72h accept timeout, installment tracking, 3-day grace, 3-miss default)
+30. `workflows/payment_activities.go` — `MarkPlanDefaulted`, `MarkPlanCompleted` (HTTP PATCH via `doRequest`)
+31. `workflows/activities.go` — Refactored `post` to use new `doRequest` helper (supports POST + PATCH)
+32. `workflows/worker/main.go` — Registers `PaymentPlanWorkflow` alongside `ContactWorkflow`
 
-### Phase 6: Polish
-25. ADR document
-26. Test coverage report
-27. OpenTelemetry integration for Temporal trace propagation
-28. README with architecture diagram
+### Phase 6: Polish (next)
+33. ADR document — key design decisions: Encore over custom framework, Temporal over cron jobs, HTTP-only worker pattern, append-only audit, dedup key design
+34. Test coverage report — target > 90% on `compliance/`; measure all services
+35. OpenTelemetry integration — Temporal OTel interceptor on worker + contact service for end-to-end trace from `POST /contact/initiate` through every activity
+36. README with architecture diagram
+37. Fix `payment_received` audit dedup key — include `occurred_at` so each installment payment produces a distinct audit entry (Phase 5 known limitation)
 
 ---
 

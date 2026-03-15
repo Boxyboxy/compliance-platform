@@ -65,206 +65,130 @@ var _ = pubsub.NewSubscription(
 	},
 )
 
-// --- Handlers ---
+// --- Generic audit handler ---
 
-func handleContactAttempted(ctx context.Context, event *contact.ContactAttemptedEvent) error {
-	dedupKey := fmt.Sprintf("contact-attempted:%d", event.ContactAttemptID)
-	if isDuplicate(ctx, dedupKey) {
-		rlog.Debug("duplicate contact-attempted event, skipping",
+// auditDescriptor describes how to extract audit fields from a Pub/Sub event.
+type auditDescriptor struct {
+	EntityType    string
+	EntityID      int64
+	Action        string
+	DedupKey      string
+	CorrelationID string
+	OldValue      json.RawMessage
+	NewValue      json.RawMessage
+}
+
+// handleAuditEvent is the single entry point for all audit Pub/Sub handlers.
+// It performs dedup, records the audit entry, and logs the outcome.
+func handleAuditEvent(ctx context.Context, desc auditDescriptor) error {
+	if isDuplicate(ctx, desc.DedupKey) {
+		rlog.Debug("duplicate event, skipping",
 			"service", "audit",
-			"dedup_key", dedupKey)
+			"dedup_key", desc.DedupKey)
 		return nil
 	}
 
-	newValue, _ := json.Marshal(event)
 	_, err := recordAuditEntry(ctx, &RecordAuditReq{
-		EntityType: "contact",
-		EntityID:   event.ContactAttemptID,
-		Action:     "contact_attempted",
+		EntityType: desc.EntityType,
+		EntityID:   desc.EntityID,
+		Action:     desc.Action,
 		Actor:      "system:pubsub",
-		NewValue:   json.RawMessage(newValue),
-		Metadata:   buildMetadata(event.CorrelationID, dedupKey),
+		OldValue:   desc.OldValue,
+		NewValue:   desc.NewValue,
+		Metadata:   buildMetadata(desc.CorrelationID, desc.DedupKey),
 	})
 	if err != nil {
-		rlog.Error("failed to record contact-attempted audit entry",
+		rlog.Error("failed to record audit entry",
 			"service", "audit",
-			"contact_attempt_id", event.ContactAttemptID,
+			"entity_type", desc.EntityType,
+			"entity_id", desc.EntityID,
+			"action", desc.Action,
 			"err", err)
 		return err
 	}
 
-	rlog.Info("contact-attempted audit recorded",
+	rlog.Info("audit entry recorded",
 		"service", "audit",
-		"contact_attempt_id", event.ContactAttemptID)
+		"entity_type", desc.EntityType,
+		"entity_id", desc.EntityID,
+		"action", desc.Action)
 	return nil
+}
+
+// marshalValue is a convenience wrapper that marshals v to JSON for audit storage.
+func marshalValue(v any) json.RawMessage {
+	data, _ := json.Marshal(v)
+	return json.RawMessage(data)
+}
+
+// --- Handlers (thin extractors that delegate to handleAuditEvent) ---
+
+func handleContactAttempted(ctx context.Context, event *contact.ContactAttemptedEvent) error {
+	return handleAuditEvent(ctx, auditDescriptor{
+		EntityType:    "contact",
+		EntityID:      event.ContactAttemptID,
+		Action:        "contact_attempted",
+		DedupKey:      fmt.Sprintf("contact-attempted:%d", event.ContactAttemptID),
+		CorrelationID: event.CorrelationID,
+		NewValue:      marshalValue(event),
+	})
 }
 
 func handleInteractionCreated(ctx context.Context, event *contact.InteractionCreatedEvent) error {
-	dedupKey := fmt.Sprintf("interaction-created:%d", event.ContactAttemptID)
-	if isDuplicate(ctx, dedupKey) {
-		rlog.Debug("duplicate interaction-created event, skipping",
-			"service", "audit",
-			"dedup_key", dedupKey)
-		return nil
-	}
-
-	newValue, _ := json.Marshal(event)
-	_, err := recordAuditEntry(ctx, &RecordAuditReq{
-		EntityType: "contact",
-		EntityID:   event.ContactAttemptID,
-		Action:     "interaction_created",
-		Actor:      "system:pubsub",
-		NewValue:   json.RawMessage(newValue),
-		Metadata:   buildMetadata(event.CorrelationID, dedupKey),
+	return handleAuditEvent(ctx, auditDescriptor{
+		EntityType:    "contact",
+		EntityID:      event.ContactAttemptID,
+		Action:        "interaction_created",
+		DedupKey:      fmt.Sprintf("interaction-created:%d", event.ContactAttemptID),
+		CorrelationID: event.CorrelationID,
+		NewValue:      marshalValue(event),
 	})
-	if err != nil {
-		rlog.Error("failed to record interaction-created audit entry",
-			"service", "audit",
-			"contact_attempt_id", event.ContactAttemptID,
-			"err", err)
-		return err
-	}
-
-	rlog.Info("interaction-created audit recorded",
-		"service", "audit",
-		"contact_attempt_id", event.ContactAttemptID)
-	return nil
 }
 
 func handleConsentChanged(ctx context.Context, event *consumer.ConsentChangedEvent) error {
-	dedupKey := fmt.Sprintf("consent-changed:%d:%s:%s", event.ConsumerID, event.ConsentStatus, event.ChangedAt)
-	if isDuplicate(ctx, dedupKey) {
-		rlog.Debug("duplicate consent-changed event, skipping",
-			"service", "audit",
-			"dedup_key", dedupKey)
-		return nil
-	}
-
 	action := "consent_granted"
 	if event.ConsentStatus == domain.ConsentRevoked {
 		action = "consent_revoked"
 	}
-
-	newValue, _ := json.Marshal(event)
-	_, err := recordAuditEntry(ctx, &RecordAuditReq{
+	return handleAuditEvent(ctx, auditDescriptor{
 		EntityType: "consumer",
 		EntityID:   event.ConsumerID,
 		Action:     action,
-		Actor:      "system:pubsub",
-		NewValue:   json.RawMessage(newValue),
-		Metadata:   buildMetadata("", dedupKey),
+		DedupKey:   fmt.Sprintf("consent-changed:%d:%s:%s", event.ConsumerID, event.ConsentStatus, event.ChangedAt),
+		NewValue:   marshalValue(event),
 	})
-	if err != nil {
-		rlog.Error("failed to record consent-changed audit entry",
-			"service", "audit",
-			"consumer_id", event.ConsumerID,
-			"err", err)
-		return err
-	}
-
-	rlog.Info("consent-changed audit recorded",
-		"service", "audit",
-		"consumer_id", event.ConsumerID,
-		"action", action)
-	return nil
 }
 
 func handleConsumerLifecycle(ctx context.Context, event *consumer.ConsumerLifecycleEvent) error {
-	dedupKey := fmt.Sprintf("consumer-lifecycle:%d:%s", event.ConsumerID, event.Action)
-	if isDuplicate(ctx, dedupKey) {
-		rlog.Debug("duplicate consumer-lifecycle event, skipping",
-			"service", "audit",
-			"dedup_key", dedupKey)
-		return nil
-	}
-
-	_, err := recordAuditEntry(ctx, &RecordAuditReq{
+	return handleAuditEvent(ctx, auditDescriptor{
 		EntityType: "consumer",
 		EntityID:   event.ConsumerID,
 		Action:     event.Action,
-		Actor:      "system:pubsub",
+		DedupKey:   fmt.Sprintf("consumer-lifecycle:%d:%s", event.ConsumerID, event.Action),
 		NewValue:   event.NewValue,
-		Metadata:   buildMetadata("", dedupKey),
 	})
-	if err != nil {
-		rlog.Error("failed to record consumer-lifecycle audit entry",
-			"service", "audit",
-			"consumer_id", event.ConsumerID,
-			"err", err)
-		return err
-	}
-
-	rlog.Info("consumer-lifecycle audit recorded",
-		"service", "audit",
-		"consumer_id", event.ConsumerID,
-		"action", event.Action)
-	return nil
 }
 
 func handleAccountLifecycle(ctx context.Context, event *account.AccountLifecycleEvent) error {
-	dedupKey := fmt.Sprintf("account-lifecycle:%d:%s", event.AccountID, event.Action)
-	if isDuplicate(ctx, dedupKey) {
-		rlog.Debug("duplicate account-lifecycle event, skipping",
-			"service", "audit",
-			"dedup_key", dedupKey)
-		return nil
-	}
-
-	_, err := recordAuditEntry(ctx, &RecordAuditReq{
+	return handleAuditEvent(ctx, auditDescriptor{
 		EntityType: "account",
 		EntityID:   event.AccountID,
 		Action:     event.Action,
-		Actor:      "system:pubsub",
+		DedupKey:   fmt.Sprintf("account-lifecycle:%d:%s", event.AccountID, event.Action),
 		OldValue:   event.OldValue,
 		NewValue:   event.NewValue,
-		Metadata:   buildMetadata("", dedupKey),
 	})
-	if err != nil {
-		rlog.Error("failed to record account-lifecycle audit entry",
-			"service", "audit",
-			"account_id", event.AccountID,
-			"err", err)
-		return err
-	}
-
-	rlog.Info("account-lifecycle audit recorded",
-		"service", "audit",
-		"account_id", event.AccountID,
-		"action", event.Action)
-	return nil
 }
 
 func handlePaymentUpdated(ctx context.Context, event *payment.PaymentUpdatedEvent) error {
-	dedupKey := fmt.Sprintf("payment-updated:%d:%s", event.PlanID, event.EventType)
-	if isDuplicate(ctx, dedupKey) {
-		rlog.Debug("duplicate payment-updated event, skipping",
-			"service", "audit",
-			"dedup_key", dedupKey)
-		return nil
-	}
-
-	newValue, _ := json.Marshal(event)
-	_, err := recordAuditEntry(ctx, &RecordAuditReq{
-		EntityType: "payment_plan",
-		EntityID:   event.PlanID,
-		Action:     event.EventType,
-		Actor:      "system:pubsub",
-		NewValue:   json.RawMessage(newValue),
-		Metadata:   buildMetadata(event.CorrelationID, dedupKey),
+	return handleAuditEvent(ctx, auditDescriptor{
+		EntityType:    "payment_plan",
+		EntityID:      event.PlanID,
+		Action:        event.EventType,
+		DedupKey:      fmt.Sprintf("payment-updated:%d:%s", event.PlanID, event.EventType),
+		CorrelationID: event.CorrelationID,
+		NewValue:      marshalValue(event),
 	})
-	if err != nil {
-		rlog.Error("failed to record payment-updated audit entry",
-			"service", "audit",
-			"plan_id", event.PlanID,
-			"err", err)
-		return err
-	}
-
-	rlog.Info("payment-updated audit recorded",
-		"service", "audit",
-		"plan_id", event.PlanID,
-		"event_type", event.EventType)
-	return nil
 }
 
 // --- Helpers ---

@@ -92,12 +92,23 @@ func (a *Activities) PublishInteractionCreated(ctx context.Context, input Publis
 
 // post is a helper that POSTs JSON to an Encore API and decodes the response.
 func (a *Activities) post(ctx context.Context, path string, payload interface{}, result interface{}) error {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("marshalling request: %w", err)
+	return a.doRequest(ctx, http.MethodPost, path, payload, result)
+}
+
+// doRequest sends an HTTP request with the given method, optional JSON payload, and optional response decoding.
+func (a *Activities) doRequest(ctx context.Context, method, path string, payload interface{}, result interface{}) error {
+	var bodyReader *bytes.Reader
+	if payload != nil {
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return fmt.Errorf("marshalling request: %w", err)
+		}
+		bodyReader = bytes.NewReader(body)
+	} else {
+		bodyReader = bytes.NewReader(nil)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.BaseURL+path, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, a.BaseURL+path, bodyReader)
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
 	}

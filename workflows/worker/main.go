@@ -36,8 +36,9 @@ func main() {
 
 	w := worker.New(c, "contact-queue", worker.Options{})
 
-	// Register workflow.
+	// Register workflows.
 	w.RegisterWorkflow(workflows.ContactWorkflow)
+	w.RegisterWorkflow(workflows.PaymentPlanWorkflow)
 
 	// Register activities with HTTP client for Encore API calls.
 	activities := &workflows.Activities{

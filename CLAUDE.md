@@ -4,13 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-**Phase 4 complete.** All core services are implemented:
+**Phase 5 complete.** All core services are implemented:
 - **Phase 1:** `consumer/` and `account/` — CRUD APIs with migrations and table-driven tests.
 - **Phase 2:** `compliance/` — Rules engine (5 TCPA/FDCPA rules), PII sanitizer, scorecard evaluator with 30+ parametrized tests.
 - **Phase 3:** `contact/`, `workflows/`, `audit/`, `scoring/` — Temporal ContactWorkflow (7 activities), Pub/Sub event flow, append-only audit log, consent revocation propagation, scoring subscriber skeleton.
 - **Phase 4:** Full audit pipeline — lifecycle events on consumer (created, consent grant+revoke) and account (created, status_updated); audit subscribes to all 6 topics with idempotency; append-only DB trigger; filtered queries (action, since, until via `POST /audit/search`); scoring fully implemented; payment topic stub.
+- **Phase 5:** `payment/` — Payment plan CRUD (propose, accept, record payment, get plan) + lifecycle state machine (proposed→accepted→active→completed/defaulted). Private endpoints for Temporal callbacks (MarkDefaulted, MarkCompleted). PaymentPlanWorkflow with signal-driven acceptance timeout (72h), installment tracking with configurable frequency, 3-day grace periods, and 3-miss default threshold. All transitions publish `payment-updated` events; audit integration works via existing Phase 4 subscriber.
 
-Next: Phase 5 (payment plan CRUD + lifecycle + PaymentPlanWorkflow). See `docs/TD.md` for technical details and `docs/PRD.md` for business context.
+Next: Phase 6 (ADR, coverage reports, diagrams, OpenTelemetry integration). See `docs/TD.md` for technical details and `docs/PRD.md` for business context.
 
 ## Tech Stack
 
@@ -166,8 +167,9 @@ Add `GET /health` to the `contact` service. It must verify DB connectivity and T
 ## Implementation Order
 
 Follow the phases in `TD.md`:
-1. **Phase 1:** Consumer + Account CRUD
-2. **Phase 2:** Compliance engine (rules, sanitizer, scorecard) with heavy tests
-3. **Phase 3:** Contact orchestration (Temporal + Pub/Sub + audit)
-4. **Phase 4:** Scoring subscriber + payment plan lifecycle
-5. **Phase 5:** ADR, coverage reports, diagrams
+1. **Phase 1:** Consumer + Account CRUD ✅
+2. **Phase 2:** Compliance engine (rules, sanitizer, scorecard) with heavy tests ✅
+3. **Phase 3:** Contact orchestration (Temporal + Pub/Sub + audit) ✅
+4. **Phase 4:** Scoring subscriber + audit pipeline ✅
+5. **Phase 5:** Payment plan CRUD + lifecycle + PaymentPlanWorkflow ✅
+6. **Phase 6:** ADR, coverage reports, diagrams
