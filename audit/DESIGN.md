@@ -96,11 +96,10 @@ Dedup key formats:
 - `consent-changed:<ConsumerID>:<ConsentStatus>:<ChangedAt>` (includes status so revoke and grant at the same second are distinct)
 - `consumer-lifecycle:<ConsumerID>:<Action>`
 - `account-lifecycle:<AccountID>:<Action>`
-- `payment-updated:<PlanID>:<EventType>`
+- `payment-updated:<PlanID>:<EventType>` for all payment event types except `payment_received`
+- `payment-updated:<PlanID>:payment_received:<occurred_at>` (RFC3339) — includes the DB-generated timestamp so each installment payment gets a distinct audit entry while still deduplicating genuine Pub/Sub redeliveries of the same message
 
 Duplicates are logged at Debug level and return nil (not an error — the handler completed successfully).
-
-**Known limitation**: `payment_received` events for the same plan share the same dedup key (`payment-updated:<PlanID>:payment_received`). Under at-least-once delivery, a redelivered `payment_received` message is correctly deduplicated. However, this also means that if a plan has multiple installment payments, only the first `payment_received` audit entry is recorded — subsequent payments are silently skipped as "duplicates". For a complete payment history, query `GET /payment-plans/:id` and the `payment_events` table directly rather than the audit log. Fixing this (e.g., including `occurred_at` in the dedup key) is tracked as a Phase 6 improvement.
 
 ## Error Codes
 

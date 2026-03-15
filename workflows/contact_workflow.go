@@ -2,6 +2,7 @@ package workflows
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -43,7 +44,10 @@ func ContactWorkflow(ctx workflow.Context, input ContactWorkflowInput) (ContactW
 		}, err
 	}
 
-	complianceJSON, _ := json.Marshal(checkResult)
+	complianceJSON, err := json.Marshal(checkResult)
+	if err != nil {
+		return ContactWorkflowResult{ContactAttemptID: input.ContactAttemptID, Status: "failed"}, fmt.Errorf("marshalling compliance result: %w", err)
+	}
 
 	// If blocked, record result and publish event, then return early.
 	if !checkResult.Allowed {
@@ -138,7 +142,10 @@ func ContactWorkflow(ctx workflow.Context, input ContactWorkflowInput) (ContactW
 		return ContactWorkflowResult{ContactAttemptID: input.ContactAttemptID, Status: "failed"}, err
 	}
 
-	scorecardJSON, _ := json.Marshal(scoreResult)
+	scorecardJSON, err := json.Marshal(scoreResult)
+	if err != nil {
+		return ContactWorkflowResult{ContactAttemptID: input.ContactAttemptID, Status: "failed"}, fmt.Errorf("marshalling scorecard result: %w", err)
+	}
 
 	// Step 5: Record contact result with all data.
 	status := deliveryResult.Status

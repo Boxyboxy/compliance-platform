@@ -48,7 +48,8 @@ func PaymentPlanWorkflow(ctx workflow.Context, input PaymentPlanInput) error {
 	if !accepted {
 		// Timed out waiting for acceptance — mark as defaulted.
 		return workflow.ExecuteActivity(ctx, activities.MarkPlanDefaulted, MarkPlanInput{
-			PlanID: input.PlanID,
+			PlanID:        input.PlanID,
+			CorrelationID: input.CorrelationID,
 		}).Get(ctx, nil)
 	}
 
@@ -101,14 +102,18 @@ func PaymentPlanWorkflow(ctx workflow.Context, input PaymentPlanInput) error {
 			missedCount++
 			if missedCount >= 3 {
 				return workflow.ExecuteActivity(ctx, activities.MarkPlanDefaulted, MarkPlanInput{
-					PlanID: input.PlanID,
+					PlanID:        input.PlanID,
+					CorrelationID: input.CorrelationID,
 				}).Get(ctx, nil)
 			}
+		} else {
+			missedCount = 0
 		}
 	}
 
 	// All installments tracked — mark as completed.
 	return workflow.ExecuteActivity(ctx, activities.MarkPlanCompleted, MarkPlanInput{
-		PlanID: input.PlanID,
+		PlanID:        input.PlanID,
+		CorrelationID: input.CorrelationID,
 	}).Get(ctx, nil)
 }

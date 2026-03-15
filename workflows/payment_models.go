@@ -12,5 +12,6 @@ type PaymentPlanInput struct {
 
 // MarkPlanInput is the payload for MarkPlanDefaulted / MarkPlanCompleted activities.
 type MarkPlanInput struct {
-	PlanID int64 `json:"PlanID"`
+	PlanID        int64  `json:"PlanID"`
+	CorrelationID string `json:"CorrelationID,omitempty"`
 }

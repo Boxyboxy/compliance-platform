@@ -52,7 +52,7 @@ Completion can be triggered in two ways:
 1. **Synchronous** — `RecordPayment` detects `SUM(amount) >= total_amount` within the same transaction and updates status to `completed`. This is the primary path.
 2. **Workflow** — `PaymentPlanWorkflow` calls `MarkPlanCompleted` after tracking all installments. This is a fallback/confirmation path.
 
-The first path to fire wins — both are idempotent (updating an already-completed plan is a no-op at the workflow level).
+The first path to fire wins. Both `MarkDefaulted` and `MarkCompleted` are idempotent at the code level: they read the current status before the transaction and return early (without re-inserting events or re-publishing) if the plan is already in a terminal state (`completed` or `defaulted`). This prevents Temporal's retry policy from emitting duplicate audit events.
 
 ## Transactional Consistency
 
@@ -77,7 +77,7 @@ Every state change publishes a `PaymentUpdatedEvent` to the `payment-updated` Pu
 | `MarkDefaulted` | `defaulted` |
 | `MarkCompleted` | `completed` |
 
-The `OccurredAt` field was added to `PaymentUpdatedEvent` in Phase 5 to provide event timestamp independent of Pub/Sub delivery time. This is additive — the audit subscriber's `json.Marshal(event)` captures it automatically in `NewValue`.
+The `OccurredAt` field is passed explicitly to `publishPaymentEvent`. For `payment_received` events, the DB-generated `occurred_at` from the `payment_events` INSERT is used rather than `time.Now()`. This ensures the audit dedup key (`payment-updated:{PlanID}:payment_received:{occurred_at}`) is stable across Temporal activity retries — if an activity is retried after the DB write succeeds but before the publish returns, the same message will carry the same timestamp and be correctly deduplicated by the audit subscriber. All other event types use `time.Now()` since their dedup keys do not include a timestamp.
 
 ## Private Endpoints
 
@@ -89,13 +89,13 @@ Financial amounts (`total_amount`, `installment_amt`, payment `amount`) are busi
 
 ## Audit Integration
 
-No changes were needed to the audit service. The existing subscriber at `audit/subscribers.go:60-66` already subscribes to `payment.PaymentUpdated` and maps:
+The audit subscriber maps payment events as:
 - `EntityType` → `"payment_plan"`
 - `EntityID` → `event.PlanID`
 - `Action` → `event.EventType`
-- Dedup key: `payment-updated:{PlanID}:{EventType}`
+- Dedup key: `payment-updated:{PlanID}:{EventType}` for all event types, except `payment_received` which uses `payment-updated:{PlanID}:payment_received:{occurred_at}` to distinguish individual installment payments.
 
-**Limitation**: Because the dedup key includes only `PlanID` and `EventType`, the audit log captures only the first `payment_received` event per plan — subsequent installment payments share the same key and are deduplicated away. For a complete payment history use `GET /payment-plans/:id` and the `payment_events` table. A Phase 6 improvement will include `occurred_at` in the dedup key to make each payment auditable.
+Each installment payment now produces its own audit entry because the dedup key includes the DB-generated `occurred_at` timestamp. For a full payment history, either the audit log or `GET /payment-plans/:id` (which returns the `payment_events` table) can be used.
 
 ## Error Codes
 

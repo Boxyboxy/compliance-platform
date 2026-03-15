@@ -16,12 +16,14 @@ import (
 
 // publishPaymentEvent publishes a payment-updated event, logging on failure.
 // This is fire-and-forget; publish errors do not propagate to the caller.
-func publishPaymentEvent(ctx context.Context, planID, accountID int64, eventType string, amount float64) {
+// occurredAt should be the DB-generated timestamp for the event so that the
+// audit dedup key is stable across Temporal activity retries.
+func publishPaymentEvent(ctx context.Context, planID, accountID int64, eventType string, amount float64, occurredAt time.Time) {
 	event := &PaymentUpdatedEvent{
 		PlanID:     planID,
 		AccountID:  accountID,
 		EventType:  eventType,
-		OccurredAt: time.Now(),
+		OccurredAt: occurredAt,
 	}
 	if amount > 0 {
 		event.Amount = amount
@@ -145,7 +147,7 @@ func (s *Service) ProposePlan(ctx context.Context, req *ProposePlanReq) (*Paymen
 		"id", p.ID,
 		"account_id", p.AccountID)
 
-	publishPaymentEvent(ctx, p.ID, p.AccountID, "proposed", 0)
+	publishPaymentEvent(ctx, p.ID, p.AccountID, "proposed", 0, time.Now())
 
 	return p, nil
 }
@@ -204,7 +206,7 @@ func (s *Service) AcceptPlan(ctx context.Context, id int64) (*PaymentPlan, error
 		"id", p.ID,
 		"account_id", p.AccountID)
 
-	publishPaymentEvent(ctx, p.ID, p.AccountID, "accepted", 0)
+	publishPaymentEvent(ctx, p.ID, p.AccountID, "accepted", 0, time.Now())
 
 	return p, nil
 }
@@ -282,11 +284,11 @@ func (s *Service) RecordPayment(ctx context.Context, id int64, req *RecordPaymen
 		"account_id", p.AccountID)
 
 	if p.Status == "accepted" {
-		publishPaymentEvent(ctx, p.ID, p.AccountID, "active", 0)
+		publishPaymentEvent(ctx, p.ID, p.AccountID, "active", 0, time.Now())
 	}
-	publishPaymentEvent(ctx, p.ID, p.AccountID, "payment_received", req.Amount)
+	publishPaymentEvent(ctx, p.ID, p.AccountID, "payment_received", req.Amount, ev.OccurredAt)
 	if completed {
-		publishPaymentEvent(ctx, p.ID, p.AccountID, "completed", 0)
+		publishPaymentEvent(ctx, p.ID, p.AccountID, "completed", 0, time.Now())
 	}
 
 	return ev, nil
@@ -318,6 +320,18 @@ func (s *Service) GetPlan(ctx context.Context, id int64) (*PaymentPlan, error) {
 //
 //encore:api private method=PATCH path=/payment-plans/:id/default
 func (s *Service) MarkDefaulted(ctx context.Context, id int64) (*PaymentPlan, error) {
+	var currentStatus string
+	err := db.QueryRow(ctx, `SELECT status FROM payment_plans WHERE id = $1`, id).Scan(&currentStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, &errs.Error{Code: errs.NotFound, Message: fmt.Sprintf("payment plan %d not found", id)}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("fetching payment plan %d: %w", id, err)
+	}
+	if currentStatus == "defaulted" || currentStatus == "completed" {
+		return s.GetPlan(ctx, id)
+	}
+
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("beginning transaction: %w", err)
@@ -356,7 +370,7 @@ func (s *Service) MarkDefaulted(ctx context.Context, id int64) (*PaymentPlan, er
 		"id", p.ID,
 		"account_id", p.AccountID)
 
-	publishPaymentEvent(ctx, p.ID, p.AccountID, "defaulted", 0)
+	publishPaymentEvent(ctx, p.ID, p.AccountID, "defaulted", 0, time.Now())
 
 	return p, nil
 }
@@ -365,6 +379,18 @@ func (s *Service) MarkDefaulted(ctx context.Context, id int64) (*PaymentPlan, er
 //
 //encore:api private method=PATCH path=/payment-plans/:id/complete
 func (s *Service) MarkCompleted(ctx context.Context, id int64) (*PaymentPlan, error) {
+	var currentStatus string
+	err := db.QueryRow(ctx, `SELECT status FROM payment_plans WHERE id = $1`, id).Scan(&currentStatus)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, &errs.Error{Code: errs.NotFound, Message: fmt.Sprintf("payment plan %d not found", id)}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("fetching payment plan %d: %w", id, err)
+	}
+	if currentStatus == "completed" || currentStatus == "defaulted" {
+		return s.GetPlan(ctx, id)
+	}
+
 	tx, err := db.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("beginning transaction: %w", err)
@@ -403,7 +429,7 @@ func (s *Service) MarkCompleted(ctx context.Context, id int64) (*PaymentPlan, er
 		"id", p.ID,
 		"account_id", p.AccountID)
 
-	publishPaymentEvent(ctx, p.ID, p.AccountID, "completed", 0)
+	publishPaymentEvent(ctx, p.ID, p.AccountID, "completed", 0, time.Now())
 
 	return p, nil
 }

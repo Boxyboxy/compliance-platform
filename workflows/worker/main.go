@@ -6,7 +6,10 @@ import (
 	"os"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/contrib/opentelemetry"
+	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/worker"
 
 	"compliance-platform/workflows"
@@ -34,7 +37,16 @@ func main() {
 	}
 	defer c.Close()
 
-	w := worker.New(c, "contact-queue", worker.Options{})
+	tracingInterceptor, err := opentelemetry.NewTracingInterceptor(opentelemetry.TracerOptions{
+		Tracer: otel.Tracer("temporal-worker"),
+	})
+	if err != nil {
+		log.Fatalf("Failed to create OTel tracing interceptor: %v", err)
+	}
+
+	w := worker.New(c, "contact-queue", worker.Options{
+		Interceptors: []interceptor.WorkerInterceptor{tracingInterceptor},
+	})
 
 	// Register workflows.
 	w.RegisterWorkflow(workflows.ContactWorkflow)

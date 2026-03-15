@@ -20,8 +20,8 @@ type Activities struct {
 
 // CheckCompliance calls POST /compliance/check via HTTP.
 func (a *Activities) CheckCompliance(ctx context.Context, input ComplianceCheckInput) (*ComplianceCheckOutput, error) {
-	log.Printf("[activity] CheckCompliance consumer_id=%d channel=%s correlation_id=%s",
-		input.ConsumerID, input.Channel, "")
+	log.Printf("[activity] CheckCompliance consumer_id=%d channel=%s",
+		input.ConsumerID, input.Channel)
 
 	var result ComplianceCheckOutput
 	if err := a.post(ctx, "/compliance/check", input, &result); err != nil {

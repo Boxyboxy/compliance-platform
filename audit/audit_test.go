@@ -9,6 +9,7 @@ import (
 	"compliance-platform/account"
 	"compliance-platform/consumer"
 	"compliance-platform/internal/domain"
+	"compliance-platform/payment"
 )
 
 func newSvc() *Service { return &Service{} }
@@ -432,6 +433,81 @@ func TestConsumerLifecycleSubscriber(t *testing.T) {
 	}
 	if got.Entries[0].EntityType != "consumer" {
 		t.Errorf("EntityType = %q, want %q", got.Entries[0].EntityType, "consumer")
+	}
+}
+
+func TestPaymentReceivedDedupDistinct(t *testing.T) {
+	ctx := context.Background()
+	svc := newSvc()
+
+	planID := time.Now().UnixNano()%1000000 + 7000000
+
+	// Two payment_received events with different OccurredAt should both be recorded.
+	t1 := time.Now().UTC()
+	t2 := t1.Add(24 * time.Hour)
+
+	err := handlePaymentUpdated(ctx, &payment.PaymentUpdatedEvent{
+		PlanID:    planID,
+		AccountID: 1,
+		EventType: "payment_received",
+		Amount:    100.0,
+		OccurredAt: t1,
+	})
+	if err != nil {
+		t.Fatalf("handlePaymentUpdated(1) error = %v", err)
+	}
+
+	err = handlePaymentUpdated(ctx, &payment.PaymentUpdatedEvent{
+		PlanID:    planID,
+		AccountID: 1,
+		EventType: "payment_received",
+		Amount:    100.0,
+		OccurredAt: t2,
+	})
+	if err != nil {
+		t.Fatalf("handlePaymentUpdated(2) error = %v", err)
+	}
+
+	got, err := svc.GetAuditLog(ctx, "payment_plan", planID)
+	if err != nil {
+		t.Fatalf("GetAuditLog() error = %v", err)
+	}
+	count := 0
+	for _, e := range got.Entries {
+		if e.Action == "payment_received" {
+			count++
+		}
+	}
+	if count < 2 {
+		t.Errorf("got %d payment_received entries, want at least 2", count)
+	}
+
+	// One-time events should still dedup: plan_proposed twice → only 1 entry.
+	proposedPlanID := planID + 1
+	for i := 0; i < 2; i++ {
+		err = handlePaymentUpdated(ctx, &payment.PaymentUpdatedEvent{
+			PlanID:     proposedPlanID,
+			AccountID:  1,
+			EventType:  "plan_proposed",
+			OccurredAt: time.Now().UTC(),
+		})
+		if err != nil {
+			t.Fatalf("handlePaymentUpdated(plan_proposed %d) error = %v", i, err)
+		}
+	}
+
+	got, err = svc.GetAuditLog(ctx, "payment_plan", proposedPlanID)
+	if err != nil {
+		t.Fatalf("GetAuditLog(proposed) error = %v", err)
+	}
+	proposedCount := 0
+	for _, e := range got.Entries {
+		if e.Action == "plan_proposed" {
+			proposedCount++
+		}
+	}
+	if proposedCount != 1 {
+		t.Errorf("got %d plan_proposed entries, want exactly 1", proposedCount)
 	}
 }
 

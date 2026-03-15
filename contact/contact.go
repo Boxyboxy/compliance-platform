@@ -61,6 +61,9 @@ func getTemporalClient() (client.Client, error) {
 type Service struct{}
 
 // InitiateContact starts a contact workflow for a consumer.
+// Note: Encore auto-injects OTel trace context into the Temporal client call.
+// The worker-side OTel interceptor (workflows/worker/main.go) reconstructs
+// the trace span, creating end-to-end traces from this API through all activities.
 //
 //encore:api public method=POST path=/contact/initiate
 func (s *Service) InitiateContact(ctx context.Context, req *InitiateContactReq) (*InitiateContactResp, error) {

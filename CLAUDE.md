@@ -4,14 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Status
 
-**Phase 5 complete.** All core services are implemented:
+**Phase 6 complete.** All phases implemented:
 - **Phase 1:** `consumer/` and `account/` — CRUD APIs with migrations and table-driven tests.
 - **Phase 2:** `compliance/` — Rules engine (5 TCPA/FDCPA rules), PII sanitizer, scorecard evaluator with 30+ parametrized tests.
 - **Phase 3:** `contact/`, `workflows/`, `audit/`, `scoring/` — Temporal ContactWorkflow (7 activities), Pub/Sub event flow, append-only audit log, consent revocation propagation, scoring subscriber skeleton.
 - **Phase 4:** Full audit pipeline — lifecycle events on consumer (created, consent grant+revoke) and account (created, status_updated); audit subscribes to all 6 topics with idempotency; append-only DB trigger; filtered queries (action, since, until via `POST /audit/search`); scoring fully implemented; payment topic stub.
 - **Phase 5:** `payment/` — Payment plan CRUD (propose, accept, record payment, get plan) + lifecycle state machine (proposed→accepted→active→completed/defaulted). Private endpoints for Temporal callbacks (MarkDefaulted, MarkCompleted). PaymentPlanWorkflow with signal-driven acceptance timeout (72h), installment tracking with configurable frequency, 3-day grace periods, and 3-miss default threshold. All transitions publish `payment-updated` events; audit integration works via existing Phase 4 subscriber.
+- **Phase 6:** Polish — Fixed `payment_received` audit dedup key bug, OpenTelemetry tracing on Temporal worker, ADR (`docs/adr/`), coverage targets (`docs/coverage.md`), observability guide (`docs/observability.md`), README.
+- **Post-Phase 6 bug fixes:**
+  - `workflows/contact_workflow.go` — `json.Marshal` errors on compliance and scorecard results now propagate as workflow failures instead of silently storing empty JSON.
+  - `workflows/payment_workflow.go` — `missedCount` resets to 0 on successful payment; default threshold is correctly 3 *consecutive* missed installments, not cumulative.
+  - `payment/payment.go` — `MarkDefaulted` and `MarkCompleted` check current status first; calls on already-terminal plans return early without re-inserting events or re-publishing.
+  - `payment/payment.go` — `payment_received` Pub/Sub events carry the DB-generated `occurred_at` timestamp so the audit dedup key is stable across Temporal retries.
+  - `workflows/payment_models.go`, `payment_workflow.go`, `payment_activities.go` — `CorrelationID` threaded through `MarkPlanInput` and logged by both payment terminal activities.
 
-Next: Phase 6 (ADR, coverage reports, diagrams, OpenTelemetry integration). See `docs/TD.md` for technical details and `docs/PRD.md` for business context.
+See `docs/TD.md` for technical details and `docs/PRD.md` for business context.
 
 ## Tech Stack
 

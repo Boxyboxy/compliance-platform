@@ -33,6 +33,7 @@ ContactWorkflow(input ContactWorkflowInput)
 ├─ Step 1: CheckCompliance
 │   POST /compliance/check
 │   input carries: consumer state + recent timestamps (assembled by contact service before workflow start)
+│   compliance result is JSON-marshalled immediately; marshal failure returns workflow error (status="failed")
 │   if !allowed → RecordContactResult(blocked) + PublishContactAttempted, return early
 │
 ├─ Step 2: SanitizePII
@@ -157,13 +158,15 @@ PaymentPlanWorkflow(input PaymentPlanInput)
 ├─ Step 2: Loop NumInstallments times:
 │   ├─ Sleep for frequency interval (weekly=7d, biweekly=14d, monthly=30d)
 │   ├─ Wait for "payment_received" signal (3-day grace via Selector)
-│   │   ├─ received → continue
+│   │   ├─ received → missedCount = 0, continue
 │   │   └─ grace expired → missedCount++
 │   │       └─ missedCount >= 3 → MarkPlanDefaulted → return
 │   └─ next installment
 │
 └─ All installments complete → MarkPlanCompleted → return
 ```
+
+**`missedCount` is consecutive, not cumulative.** A successful payment resets the counter to zero. A consumer who misses 2, pays 1, then misses 1 more has a `missedCount` of 1 — not 3. Default requires 3 consecutive missed installments.
 
 ### Key Differences from ContactWorkflow
 
@@ -192,10 +195,12 @@ Both `ContactWorkflow` and `PaymentPlanWorkflow` are registered on the same `con
 
 ## Correlation ID
 
-`ContactWorkflowInput.CorrelationID` is set to the Temporal workflow ID by the contact service at workflow start. Every activity logs it (Phase 4: switch to `rlog` once the worker is updated). This enables log correlation across Encore's structured logs and Temporal's worker logs without a trace collector:
+`ContactWorkflowInput.CorrelationID` is set to the Temporal workflow ID by the contact service at workflow start. All activities log it, enabling log correlation across Encore's structured logs and Temporal's worker logs without a trace collector:
 
 ```
 grep "correlation_id=contact-42-1710000000000" <encore-logs> <temporal-worker-logs>
 ```
 
 The workflow ID format is `contact-{attemptID}-{unixMilli}`, making it human-readable in the Temporal UI and unique across restarts.
+
+`PaymentPlanInput.CorrelationID` flows through to `MarkPlanInput` and is logged by both `MarkPlanDefaulted` and `MarkPlanCompleted` activities, so payment plan terminal transitions are traceable in the same way.

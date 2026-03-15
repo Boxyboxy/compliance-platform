@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"encore.dev/pubsub"
 	"encore.dev/rlog"
@@ -181,11 +182,15 @@ func handleAccountLifecycle(ctx context.Context, event *account.AccountLifecycle
 }
 
 func handlePaymentUpdated(ctx context.Context, event *payment.PaymentUpdatedEvent) error {
+	key := fmt.Sprintf("payment-updated:%d:%s", event.PlanID, event.EventType)
+	if event.EventType == "payment_received" {
+		key = fmt.Sprintf("payment-updated:%d:%s:%s", event.PlanID, event.EventType, event.OccurredAt.Format(time.RFC3339))
+	}
 	return handleAuditEvent(ctx, auditDescriptor{
 		EntityType:    "payment_plan",
 		EntityID:      event.PlanID,
 		Action:        event.EventType,
-		DedupKey:      fmt.Sprintf("payment-updated:%d:%s", event.PlanID, event.EventType),
+		DedupKey:      key,
 		CorrelationID: event.CorrelationID,
 		NewValue:      marshalValue(event),
 	})
